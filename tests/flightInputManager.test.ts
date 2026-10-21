@@ -270,6 +270,33 @@ describe("flightInputManager keyboard roll", () => {
     }
   });
 
+  it("releases held flight keys and leaves commands to an open aircraft dialog", () => {
+    const input = createFlightInputManager();
+    const detach = input.attach(window);
+    const dialog = document.createElement("dialog");
+    dialog.open = true;
+    const confirm = document.createElement("button");
+    confirm.textContent = "Confirm";
+    dialog.append(confirm);
+    document.body.append(dialog);
+    try {
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w" }));
+      expect(input.poll(1).elevator).toBe(1);
+      confirm.focus();
+      expect(input.poll(1).elevator).toBe(0);
+      for (const [code, key] of [["KeyW", "w"], ["KeyA", "a"], ["KeyP", "p"], ["KeyG", "g"]]) {
+        confirm.dispatchEvent(new KeyboardEvent("keydown", { code, key, bubbles: true }));
+      }
+      expect(input.poll(1).elevator).toBe(0);
+      expect(input.poll(1).aileron).toBe(0);
+      expect(input.isPaused()).toBe(false);
+      expect(input.getGearDownNorm()).toBe(1);
+      dialog.open = false;
+      confirm.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyP", key: "p", bubbles: true }));
+      expect(input.isPaused()).toBe(true);
+    } finally { detach(); input.dispose(); dialog.remove(); }
+  });
+
   /** The flight's bindings read the keyboard through gamepad-tools' source, which asks the same rule. */
   it("hands the bindings a flight key pressed on a focused slider, and none typed into a text field", () => {
     const source = createBrowserInputSource({ target: window });

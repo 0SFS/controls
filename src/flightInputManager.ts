@@ -603,6 +603,12 @@ export function createFlightInputManager(options: {
   return {
     attach(target: Window): () => void {
       const onKeyDown = (event: KeyboardEvent): void => {
+        // A fullscreen warning owns all keyboard input, including flight
+        // commands that a focused button would ordinarily pass through.
+        if ((event.target as Element | null)?.closest?.("dialog[open]")) {
+          keysDown.clear();
+          return;
+        }
         // The focused control keeps the keys it uses, and the rest fly: a trim
         // slider just dragged keeps its arrows and still lets W, A, S and D
         // through, as the throttle lever always did. Typing into a text field
@@ -653,7 +659,8 @@ export function createFlightInputManager(options: {
       // Focus moving to a slider or a button keeps the keys held: their keyups
       // still arrive. Only a text field, which takes every key, lets go.
       const onFocusIn = (event: FocusEvent): void => {
-        if (controlTakesEveryKey(event.target)) keysDown.clear();
+        if (controlTakesEveryKey(event.target)
+          || (event.target as Element | null)?.closest?.("dialog[open]")) keysDown.clear();
       };
 
       // Capture, so a flight key is marked handled before any bubbling window
