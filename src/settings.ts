@@ -30,6 +30,7 @@ const KEYBOARD = { tab: "controls", section: "keyboard" } as const;
 const ORBIT = { tab: "controls", section: "orbit" } as const;
 const FEEDBACK = { tab: "controls", section: "feedback" } as const;
 const STOVL = { tab: "controls", section: "stovl" } as const;
+const BRAKING = { tab: "controls", section: "braking" } as const;
 /** The pre-registry defaults of the keyboard stick, which the migration and the Reset button share. */
 const KEYBOARD_STICK_SOURCE = "controls/src/keyboardStickResponse.ts";
 
@@ -45,6 +46,7 @@ export const CONTROLS_SECTION_TITLES_2: readonly (readonly [tab: string, section
   ["controls", "keyboard", "Keyboard response"],
   ["controls", "feedback", "Feedback"],
   ["controls", "stovl", "F-35B STOVL"],
+  ["controls", "braking", "F-35B braking"],
 ];
 
 const main = <T extends { tab: string; section: string }>(home: T) => ({ ...home, level: "main" as const });
@@ -193,6 +195,18 @@ export const CONTROLS_PARAMETERS_2 = [
 ] as const satisfies readonly ParameterSpec[];
 
 export const CONTROLS_PARAMETERS_3 = [
+  {
+    id: "osfs.input.keepSliderBrakes",
+    label: "Keep slider brakes applied",
+    description: "Keeps wheel brakes applied after releasing the F-35B throttle/brake slider, on this screen and the phone. Off, releasing the slider returns it to idle and releases its brakes. Yaw controls apply differential braking while the main wheels are on the ground.",
+    unit: "none",
+    kind: "boolean",
+    default: false,
+    defaultReason: "Braking requires holding the slider unless the pilot chooses to keep it applied.",
+    home: main(BRAKING),
+    appliesLive: true,
+    source: "engines/src/throttleLever.ts",
+  },
   {
     id: "osfs.aircraft.stovlConversion",
     label: "STOVL conversion",

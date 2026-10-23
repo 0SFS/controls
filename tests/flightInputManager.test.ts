@@ -98,6 +98,100 @@ describe("flightInputManager keyboard roll", () => {
     detach();
   });
 
+  it.each([false, true])("keeps combined-lever braking across polls with mapped input %s", (mapped) => {
+    const input = createFlightInputManager();
+    input.setGamepadToolsActive(mapped);
+    input.setThrottleBrake(0.8, 0.6);
+    expect(input.poll(1 / 60)).toMatchObject({ throttle: 0, brake: 0.6 });
+    input.replaceThrottle(0); // Engine-off feedback must preserve the brake lever.
+    expect(input.poll(1 / 60)).toMatchObject({ throttle: 0, brake: 0.6 });
+    expect(input.hasActiveFlightInput()).toBe(false); // A resting lever does not steal phone ownership.
+    input.setThrottleBrake(0.4, 0);
+    expect(input.poll(1 / 60)).toMatchObject({ throttle: 0.4, brake: 0 });
+    input.dispose();
+  });
+
+  it("mixes a held brake key with the lever and releases each independently", () => {
+    const input = createFlightInputManager();
+    const detach = input.attach(window);
+    input.setThrottleBrake(0, 0.4);
+    expect(input.getSliderBrake()).toBe(0.4);
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyB" }));
+    expect(input.poll(1 / 60).brake).toBe(1);
+    expect(input.getSliderBrake()).toBe(0.4);
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyB" }));
+    expect(input.poll(1 / 60).brake).toBe(0.4);
+    input.setThrottle(0.3);
+    expect(input.getSliderBrake()).toBe(0);
+    expect(input.poll(1 / 60)).toMatchObject({ throttle: 0.3, brake: 0 });
+    input.setThrottleBrake(0, 1);
+    input.setRemoteOwned(true);
+    expect(input.getSliderBrake()).toBe(0);
+    input.setThrottleBrake(0, 0.7);
+    input.setRemoteOwned(false);
+    expect(input.poll(1 / 60).brake).toBe(0);
+    input.setThrottleBrake(0, 1);
+    input.resetControls(0);
+    expect(input.poll(1 / 60).brake).toBe(0);
+    detach();
+    input.dispose();
+  });
+
+  it("keeps slider brakes against a stationary legacy throttle without suppressing the other axes", () => {
+    const pad = {
+      id: "legacy controller", index: 0, axes: [0.3, -0.4, 0.5, 0],
+      buttons: Array.from({ length: 8 }, () => ({ value: 0, pressed: false })),
+    };
+    vi.mocked(navigator.getGamepads).mockReturnValue([pad as unknown as Gamepad]);
+    const input = createFlightInputManager();
+    // No gamepad poll has happened yet: the slider must still rearm its throttle axis.
+    input.setThrottleBrake(0, 0.6);
+    expect(input.poll(1)).toMatchObject({ throttle: 0, brake: 0.6, aileron: 0.3, elevator: 0.4, rudder: 0.5 });
+    pad.axes[3] = 0.04;
+    expect(input.poll(1)).toMatchObject({ throttle: 0, brake: 0.6 });
+    pad.axes[3] = 0.4;
+    expect(input.poll(1)).toMatchObject({ throttle: 0.3, brake: 0 });
+    expect(input.getSliderBrake()).toBe(0);
+    input.dispose();
+  });
+
+  it("keeps a new legacy controller's resting throttle from replacing slider brakes", () => {
+    const input = createFlightInputManager();
+    input.setThrottleBrake(0, 1);
+    const pad = {
+      id: "new controller", index: 0, axes: [0, 0, 0, -0.6],
+      buttons: Array.from({ length: 8 }, () => ({ value: 0, pressed: false })),
+    };
+    vi.mocked(navigator.getGamepads).mockReturnValue([pad as unknown as Gamepad]);
+    expect(input.poll(1)).toMatchObject({ throttle: 0, brake: 1 });
+    pad.axes[3] = -0.2;
+    expect(input.poll(1)).toMatchObject({ throttle: 0.6, brake: 0 });
+    input.dispose();
+  });
+
+  it("detects a held legacy gamepad brake independently of full slider brakes", () => {
+    const pad = {
+      id: "legacy controller", index: 0, axes: [0, 0, 0, 0],
+      buttons: Array.from({ length: 8 }, () => ({ value: 0, pressed: false })),
+    };
+    vi.mocked(navigator.getGamepads).mockReturnValue([pad as unknown as Gamepad]);
+    const input = createFlightInputManager();
+    input.adoptControls(input.getControls()); // Arms the protected legacy path used after a phone handoff.
+    input.setThrottleBrake(0, 1);
+    input.poll(1);
+    expect(input.hasActiveFlightInput()).toBe(false);
+    pad.buttons[0] = { value: 1, pressed: true };
+    input.poll(1);
+    input.poll(1); // The initial button edge has passed; the held brake is still active input.
+    expect(input.hasActiveFlightInput()).toBe(true);
+    expect(input.getSliderBrake()).toBe(1);
+    pad.buttons[0] = { value: 0, pressed: false };
+    input.poll(1);
+    expect(input.hasActiveFlightInput()).toBe(false);
+    expect(input.poll(1).brake).toBe(1);
+    input.dispose();
+  });
+
   it("latches the gear lever on G, and ignores the auto-repeat", () => {
     const input = createFlightInputManager();
     const detach = input.attach(window);
