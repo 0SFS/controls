@@ -155,3 +155,37 @@ describe("profile editor", () => {
     expect(await store.loadProfile("0sfs", oldProfile.profileId)).toBeNull();
   });
 });
+
+describe("resets", () => {
+  it("asks the host for a reset only while a control differs from its default, and the reset returns it", () => {
+    const pad = { connected: true, id: "Test pad", index: 0, mapping: "standard", axes: [0, 0, 0, 0], buttons: [], timestamp: 0 };
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [pad] });
+    source.tick();
+    editor.destroy();
+    const resets: { control: HTMLElement; label: string; reset(): void }[] = [];
+    editor = mountBindingEditor({
+      root, source, runtime, store: createProfileStore(),
+      attachReset: (control, reset) => { resets.push({ control, ...reset }); },
+    });
+    // Automatic selection shows the device it picked, and still asks for no reset.
+    const select = (): HTMLSelectElement => root.querySelector<HTMLSelectElement>(".gt-device-row select")!;
+    expect(select().selectedOptions[0].text).toBe("Slot 0: Test pad");
+    expect(resets).toEqual([]);
+
+    select().value = source.getFrame().gamepads[0].sessionId;
+    select().dispatchEvent(new Event("change", { bubbles: true }));
+    expect(resets.map((entry) => [entry.control, entry.label])).toEqual([[select(), "Reset Controller to the default: Automatic selection"]]);
+    resets.pop()!.reset();
+    expect(source.getDeviceSelection()).toBeNull();
+    expect(document.activeElement).toBe(select());
+    expect(resets).toEqual([]);
+
+    const checkbox = (): HTMLInputElement => root.querySelector<HTMLInputElement>(".gt-check input")!;
+    checkbox().click();
+    expect(resets.map((entry) => [entry.control, entry.label])).toEqual([[checkbox(), "Reset Show 3D controller to the default: off"]]);
+    resets.pop()!.reset();
+    expect(checkbox().checked).toBe(false);
+    expect(document.activeElement).toBe(checkbox());
+    expect(resets).toEqual([]);
+  });
+});
