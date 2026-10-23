@@ -2,18 +2,43 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadInputSensitivityPreference, type HudInputMode } from "foss-earth/input";
 import { controlsParameterDefaults } from "../src/settings";
-import { attachFlightCameraInput } from "../src/flightCameraInput";
+import { attachFlightCameraInput, type FlightCameraInputOptions } from "../src/flightCameraInput";
 
 const getTouchWheelCooldownMs = () => controlsParameterDefaults().get("osfs.input.touchWheelCooldown");
 
+type Contact = Pick<Touch, "identifier" | "target" | "clientX" | "clientY">;
+const contact = (identifier: number, target: EventTarget, clientX: number, clientY: number): Contact => ({ identifier, target, clientX, clientY });
+
+// A TouchEvent includes contacts on other elements too. Only changedTouches
+// tells the receiver which contacts began, moved, or ended in this event.
+function dispatchTouch(target: EventTarget, name: string, touches: Contact[], changedTouches: Contact[]): Event {
+  const event = new Event(name, { bubbles: true, cancelable: true });
+  Object.assign(event, { touches, changedTouches, targetTouches: touches.filter(touch => touch.target === target) });
+  target.dispatchEvent(event);
+  return event;
+}
+
+function touchSequence(canvas: HTMLCanvasElement) {
+  let previous: Contact[] = [];
+  return (name: string, points: number[][]): Event => {
+    const next = points.map(([x, y], index) => contact(index + 1, canvas, x, y));
+    const changed = name === "touchstart" ? next.filter(touch => !previous.some(last => last.identifier === touch.identifier))
+      : name === "touchend" || name === "touchcancel" ? previous.filter(last => !next.some(touch => touch.identifier === last.identifier))
+        : next;
+    previous = next;
+    return dispatchTouch(canvas, name, next, changed);
+  };
+}
+
 const disposers: Array<() => void> = [];
 afterEach(() => { disposers.splice(0).forEach((dispose) => dispose()); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-function setup(initial: HudInputMode = "mouse") {
+function setup(initial: HudInputMode = "mouse", options: Partial<FlightCameraInputOptions> = {}) {
   const canvas = document.createElement("canvas");
   let mode = initial;
   const orbit = vi.fn();
   const zoom = vi.fn();
-  const dispose = attachFlightCameraInput(canvas, { getMode: () => mode, getSensitivity: loadInputSensitivityPreference, orbit, zoom, getTouchWheelCooldownMs });
+  const onOrbitActive = vi.fn();
+  const dispose = attachFlightCameraInput(canvas, { getMode: () => mode, getSensitivity: loadInputSensitivityPreference, orbit, zoom, onOrbitActive, getTouchWheelCooldownMs, ...options });
   disposers.push(dispose);
   const pointer = (target: EventTarget, name: string, button: number, x = 0, y = 0, buttons = button === 2 ? 2 : 1) => {
     const event = new MouseEvent(name, { button, buttons, clientX: x, clientY: y, cancelable: true });
@@ -26,7 +51,7 @@ function setup(initial: HudInputMode = "mouse") {
     canvas.dispatchEvent(event);
     return event;
   };
-  return { canvas, orbit, zoom, dispose, pointer, wheel, setMode: (next: HudInputMode) => { mode = next; } };
+  return { canvas, orbit, zoom, onOrbitActive, dispose, pointer, wheel, touches: touchSequence(canvas), setMode: (next: HudInputMode) => { mode = next; } };
 }
 describe("flight camera gestures", () => {
   it("orbits on right drag, ends on release and leaves left click untouched", () => {
@@ -81,17 +106,14 @@ describe("flight camera gestures", () => {
     const s = setup("trackpad");
     s.wheel({ ctrlKey: true, deltaY: -20 });
     expect(s.zoom).not.toHaveBeenCalled();
-    const touches = (name: string, points: number[][]) => {
-      const event = new Event(name, { cancelable: true });
-      Object.assign(event, { touches: points.map(([clientX, clientY]) => ({ clientX, clientY })) });
-      s.canvas.dispatchEvent(event);
-      expect(event.defaultPrevented).toBe(true);
-    };
+    const touches = s.touches;
     touches("touchstart", [[0, 0]]);
     touches("touchmove", [[10, 10]]);
-    expect(s.orbit).not.toHaveBeenCalled();
-    touches("touchstart", [[0, 0], [10, 0]]);
-    touches("touchmove", [[10, 10], [20, 10]]);
+    expect(s.orbit).toHaveBeenCalledWith(0.05, 0.05);
+    expect(s.zoom).not.toHaveBeenCalled();
+    s.orbit.mockClear();
+    touches("touchstart", [[10, 10], [20, 10]]);
+    touches("touchmove", [[20, 20], [30, 20]]);
     expect(s.orbit).toHaveBeenCalledWith(0.05, 0.05);
     touches("touchmove", [[5, 10], [25, 10]]);
     expect(s.zoom).toHaveBeenLastCalledWith(0.5);
@@ -111,11 +133,7 @@ describe("flight camera gestures", () => {
       touch: { pan: 1, orbit: 2, zoom: 3 },
     };
     disposers.push(attachFlightCameraInput(canvas, { getMode: () => "mouse", getSensitivity: () => sensitivity, orbit, zoom, getTouchWheelCooldownMs }));
-    const touches = (name: string, points: number[][]) => {
-      const event = new Event(name, { cancelable: true });
-      Object.assign(event, { touches: points.map(([clientX, clientY]) => ({ clientX, clientY })) });
-      canvas.dispatchEvent(event);
-    };
+    const touches = touchSequence(canvas);
 
     touches("touchstart", [[0, 0], [10, 0]]);
     touches("touchmove", [[10, 10], [20, 10]]);
@@ -127,11 +145,7 @@ describe("flight camera gestures", () => {
   it("leaves a touchscreen pinch to the touch path when Safari also sends gesture events", () => {
     vi.stubGlobal("GestureEvent", Event);
     const s = setup("trackpad");
-    const touches = (name: string, points: number[][]) => {
-      const event = new Event(name, { cancelable: true });
-      Object.assign(event, { touches: points.map(([clientX, clientY]) => ({ clientX, clientY })) });
-      s.canvas.dispatchEvent(event);
-    };
+    const touches = s.touches;
     const gesture = (name: string, scale: number) => {
       const event = new Event(name, { cancelable: true });
       Object.assign(event, { scale });
@@ -148,17 +162,152 @@ describe("flight camera gestures", () => {
 
   it("ignores synthesized wheel pans while two-finger touch is active", () => {
     const s = setup("trackpad");
-    const touches = (name: string, points: number[][]) => {
-      const event = new Event(name, { cancelable: true });
-      Object.assign(event, { touches: points.map(([clientX, clientY]) => ({ clientX, clientY })) });
-      s.canvas.dispatchEvent(event);
-    };
+    const touches = s.touches;
     touches("touchstart", [[0, 0], [20, 0]]);
     s.orbit.mockClear();
     s.wheel({ deltaX: 40, deltaY: 40 });
     expect(s.orbit).not.toHaveBeenCalled();
     touches("touchmove", [[10, 10], [30, 10]]);
     expect(s.orbit).toHaveBeenCalledWith(0.05, 0.05);
+  });
+
+  it.each(["joystick first", "camera first"])("orbits with one canvas finger while another holds the joystick: %s", order => {
+    const s = setup("touch");
+    const joystick = document.createElement("div");
+    const stick = contact(11, joystick, 20, 40);
+    const camera = contact(22, s.canvas, 300, 200);
+    if (order === "joystick first") {
+      dispatchTouch(joystick, "touchstart", [stick], [stick]);
+      dispatchTouch(s.canvas, "touchstart", [stick, camera], [camera]);
+    } else {
+      dispatchTouch(s.canvas, "touchstart", [camera], [camera]);
+      dispatchTouch(joystick, "touchstart", [camera, stick], [stick]);
+    }
+    const movedCamera = contact(22, s.canvas, 310, 220);
+    dispatchTouch(s.canvas, "touchmove", [stick, movedCamera], [movedCamera]);
+    expect(s.orbit.mock.calls).toEqual([[0.05, 0.1]]);
+    expect(s.zoom).not.toHaveBeenCalled();
+
+    const movedStick = contact(11, joystick, 100, 100);
+    dispatchTouch(joystick, "touchmove", [movedStick, movedCamera], [movedStick]);
+    expect(s.orbit).toHaveBeenCalledTimes(1);
+    dispatchTouch(joystick, "touchend", [movedCamera], [movedStick]);
+    const lastCamera = contact(22, s.canvas, 320, 240);
+    dispatchTouch(s.canvas, "touchmove", [lastCamera], [lastCamera]);
+    expect(s.orbit.mock.calls).toEqual([[0.05, 0.1], [0.05, 0.1]]);
+    expect(s.zoom).not.toHaveBeenCalled();
+  });
+
+  it("rebaselines one/two-finger transitions without moving or zooming the camera", () => {
+    const s = setup("touch");
+    s.touches("touchstart", [[0, 0]]);
+    s.touches("touchmove", [[10, 10]]);
+    s.touches("touchstart", [[10, 10], [30, 10]]);
+    expect(s.orbit.mock.calls).toEqual([[0.05, 0.05]]);
+    expect(s.zoom).not.toHaveBeenCalled();
+    s.touches("touchmove", [[20, 20], [40, 20]]);
+    s.touches("touchend", [[20, 20]]);
+    expect(s.orbit.mock.calls).toEqual([[0.05, 0.05], [0.05, 0.05]]);
+    expect(s.zoom.mock.calls).toEqual([[1]]);
+    s.touches("touchmove", [[30, 30]]);
+    expect(s.orbit.mock.calls).toEqual([[0.05, 0.05], [0.05, 0.05], [0.05, 0.05]]);
+    expect(s.zoom.mock.calls).toEqual([[1]]);
+  });
+
+  it("ignores foreign targets even when a canvas start batches their changed contacts", () => {
+    const s = setup("touch");
+    const ui = document.createElement("div");
+    const foreign = contact(1, ui, 0, 0);
+    const camera = contact(2, s.canvas, 200, 100);
+    dispatchTouch(s.canvas, "touchstart", [foreign, camera], [foreign, camera]);
+    const movedForeign = contact(1, ui, 100, 80);
+    const movedCamera = contact(2, s.canvas, 210, 120);
+    dispatchTouch(s.canvas, "touchmove", [movedForeign, movedCamera], [movedForeign, movedCamera]);
+    expect(s.orbit.mock.calls).toEqual([[0.05, 0.1]]);
+    expect(s.zoom).not.toHaveBeenCalled();
+  });
+
+  it("ignores a third canvas finger and resumes from the remaining pair without a jump", () => {
+    const s = setup("touch");
+    s.touches("touchstart", [[0, 0], [20, 0]]);
+    s.touches("touchmove", [[10, 10], [30, 10]]);
+    s.touches("touchstart", [[10, 10], [30, 10], [100, 100]]);
+    s.touches("touchmove", [[20, 20], [40, 20], [120, 120]]);
+    expect(s.orbit.mock.calls).toEqual([[0.05, 0.05]]);
+    expect(s.onOrbitActive).toHaveBeenLastCalledWith(false);
+    s.touches("touchend", [[20, 20], [40, 20]]);
+    expect(s.orbit).toHaveBeenCalledTimes(1);
+    s.touches("touchmove", [[30, 30], [50, 30]]);
+    expect(s.orbit.mock.calls).toEqual([[0.05, 0.05], [0.05, 0.05]]);
+    expect(s.zoom.mock.calls).toEqual([[1], [1]]);
+  });
+
+  it.each(["preventDefault", "stopPropagation"] as const)("leaves a consumed canvas touch with its click handler: %s", consume => {
+    const s = setup("touch");
+    const parent = document.createElement("div");
+    parent.append(s.canvas);
+    parent.addEventListener("touchstart", event => event[consume](), { capture: true });
+    const first = contact(1, s.canvas, 0, 0);
+    dispatchTouch(s.canvas, "touchstart", [first], [first]);
+    const moved = contact(1, s.canvas, 20, 30);
+    dispatchTouch(s.canvas, "touchmove", [moved], [moved]);
+    expect(s.orbit).not.toHaveBeenCalled();
+    expect(s.zoom).not.toHaveBeenCalled();
+  });
+
+  it("uses touch sensitivity and inversion for a single finger in any pointer mode", () => {
+    const s = setup("mouse", {
+      getSensitivity: () => ({
+        mouse: { pan: 1, orbit: 7, zoom: 1 },
+        trackpad: { pan: 1, orbit: 4, zoom: 1 },
+        touch: { pan: 1, orbit: 2, zoom: 3 },
+      }),
+      getOrbitInvert: () => ({ invertYaw: true, invertPitch: true, recenterMode: "hold" }),
+    });
+    s.touches("touchstart", [[10, 20]]);
+    s.touches("touchmove", [[20, 40]]);
+    expect(s.orbit.mock.calls).toEqual([[-0.1, -0.2]]);
+    expect(s.zoom).not.toHaveBeenCalled();
+  });
+
+  it("suppresses synthesized wheel pans during a one-finger gesture and its release cooldown", () => {
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const s = setup("trackpad");
+    s.touches("touchstart", [[0, 0]]);
+    s.wheel({ deltaX: 20, deltaY: 30 });
+    expect(s.orbit).not.toHaveBeenCalled();
+    s.touches("touchend", []);
+    s.wheel({ deltaX: 20, deltaY: 30 });
+    expect(s.orbit).not.toHaveBeenCalled();
+    now += getTouchWheelCooldownMs() + 1;
+    s.wheel({ deltaX: 20, deltaY: 30 });
+    expect(s.orbit).toHaveBeenCalledWith(-0.1, -0.15);
+  });
+
+  it("drops ended, cancelled, and blurred touch contacts until a new canvas touch begins", () => {
+    const s = setup("touch");
+    const first = contact(1, s.canvas, 0, 0);
+    const moved = contact(1, s.canvas, 10, 10);
+    dispatchTouch(s.canvas, "touchstart", [first], [first]);
+    dispatchTouch(s.canvas, "touchmove", [moved], [moved]);
+    dispatchTouch(s.canvas, "touchcancel", [], [moved]);
+    dispatchTouch(s.canvas, "touchmove", [first], [first]);
+    expect(s.orbit).toHaveBeenCalledTimes(1);
+    expect(s.onOrbitActive).toHaveBeenLastCalledWith(false);
+
+    dispatchTouch(s.canvas, "touchstart", [first], [first]);
+    window.dispatchEvent(new Event("blur"));
+    dispatchTouch(s.canvas, "touchmove", [moved], [moved]);
+    expect(s.orbit).toHaveBeenCalledTimes(1);
+    expect(s.onOrbitActive).toHaveBeenLastCalledWith(false);
+
+    dispatchTouch(s.canvas, "touchstart", [first], [first]);
+    dispatchTouch(s.canvas, "touchmove", [moved], [moved]);
+    dispatchTouch(s.canvas, "touchend", [], [moved]);
+    dispatchTouch(s.canvas, "touchmove", [first], [first]);
+    expect(s.orbit.mock.calls).toEqual([[0.05, 0.05], [0.05, 0.05]]);
+    expect(s.onOrbitActive).toHaveBeenLastCalledWith(false);
   });
 
   it("applies orbit invert settings", () => {

@@ -25,7 +25,10 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
   canvas.style.touchAction = "none";
   let drag: { id: number; x: number; y: number } | null = null;
   let gestureScale: number | null = null;
-  let touch: { x: number; y: number; distance: number } | null = null;
+  // TouchEvent.touches includes fingers on the HUD and other windows too.
+  // Only contacts whose unconsumed press reached this canvas belong to it.
+  const ownedTouches = new Set<number>();
+  let touch: { ids: number[]; x: number; y: number; distance: number } | null = null;
   let touchWheelCooldownUntil = 0;
   const setOrbitActive = (active: boolean): void => {
     options.onOrbitActive?.(active);
@@ -56,7 +59,7 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
     setOrbitActive(false);
   };
   const touchBlocksWheel = (): boolean => (
-    touch !== null || owner.performance.now() < touchWheelCooldownUntil
+    ownedTouches.size > 0 || owner.performance.now() < touchWheelCooldownUntil
   );
   listen(canvas, "pointerdown", (event: PointerEvent) => {
     if (options.getMode() !== "mouse" || event.button !== 2) return;
@@ -76,7 +79,7 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
   for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) {
     listen(owner, name, (event: PointerEvent) => { if (event.pointerId === drag?.id) clearDrag(); });
   }
-  listen(owner, "blur", () => { clearDrag(); touch = null; gestureScale = null; });
+  listen(owner, "blur", () => { clearDrag(); ownedTouches.clear(); touch = null; gestureScale = null; });
   // Suppress the native right-button menu, including platforms firing it after pointerup.
   listen(canvas, "contextmenu", (event: MouseEvent) => { event.preventDefault(); });
   listen(canvas, "wheel", (event: WheelEvent) => {
@@ -96,7 +99,7 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
     event.preventDefault();
     // Safari fires these for a touchscreen pinch too; with fingers down the
     // touch path owns it, so only a trackpad pinch comes this way.
-    gestureScale = options.getMode() === "trackpad" && touch === null ? event.scale ?? 1 : null;
+    gestureScale = options.getMode() === "trackpad" && ownedTouches.size === 0 ? event.scale ?? 1 : null;
   });
   listen(canvas, "gesturechange", (event: Event & { scale?: number }) => {
     event.preventDefault();
@@ -108,33 +111,53 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
   });
   listen(canvas, "gestureend", (event: Event) => { event.preventDefault(); gestureScale = null; });
   const readTouch = (event: TouchEvent) => {
-    if (event.touches.length !== 2) return null;
-    const [a, b] = [event.touches[0], event.touches[1]];
-    return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2, distance: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) };
+    const contacts = Array.from(event.touches)
+      .filter(contact => ownedTouches.has(contact.identifier))
+      .sort((a, b) => a.identifier - b.identifier);
+    if (contacts.length === 0 || contacts.length > 2) return null;
+    const [a, b = a] = contacts;
+    return {
+      ids: contacts.map(contact => contact.identifier),
+      x: (a.clientX + b.clientX) / 2,
+      y: (a.clientY + b.clientY) / 2,
+      distance: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+    };
   };
   listen(canvas, "touchstart", (event: TouchEvent) => {
+    // A world interaction can reserve its press before camera navigation.
+    if (event.defaultPrevented) return;
+    for (const contact of Array.from(event.changedTouches)) {
+      if (contact.target === canvas) ownedTouches.add(contact.identifier);
+    }
+    if (ownedTouches.size === 0) return;
     event.preventDefault();
+    gestureScale = null;
     touch = readTouch(event);
     setOrbitActive(touch !== null);
-    if (touch) touchWheelCooldownUntil = 0;
+    touchWheelCooldownUntil = 0;
   });
   listen(canvas, "touchmove", (event: TouchEvent) => {
+    if (ownedTouches.size === 0) return;
     event.preventDefault();
     const next = readTouch(event);
-    // Two fingers orbit and pinch whatever the pointer mode is.
-    if (touch && next && gestureScale === null) {
+    // One or two canvas fingers orbit at the same rate in either pointer mode.
+    // Contact changes establish a new baseline rather than moving the camera.
+    if (touch && next && touch.ids.length === next.ids.length
+      && touch.ids.every((id, index) => id === next.ids[index]) && gestureScale === null) {
       // Match mouse/trackpad grab direction: finger right → positive yaw.
       // Older code used (prev - next), which felt inverted on Android touch
       // relative to desktop Firefox trackpad wheel pans.
       orbit(next.x - touch.x, next.y - touch.y, "touch");
-      if (touch.distance > 0 && next.distance > 0) zoom(touch.distance / next.distance, "touch");
+      if (touch.ids.length === 2 && touch.distance > 0 && next.distance > 0) zoom(touch.distance / next.distance, "touch");
     }
-    setOrbitActive(touch !== null && next !== null && gestureScale === null);
+    setOrbitActive(next !== null && gestureScale === null);
     touch = next;
   });
   for (const name of ["touchend", "touchcancel"]) {
     listen(canvas, name, (event: TouchEvent) => {
+      if (ownedTouches.size === 0) return;
       event.preventDefault();
+      for (const contact of Array.from(event.changedTouches)) ownedTouches.delete(contact.identifier);
       const nextTouch = readTouch(event);
       touch = nextTouch;
       setOrbitActive(nextTouch !== null);
@@ -142,6 +165,8 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
     });
   }
   return () => {
+    ownedTouches.clear();
+    touch = null;
     clearDrag();
     listeners.forEach((remove) => remove());
     canvas.style.touchAction = previousTouchAction;
