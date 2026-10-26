@@ -177,6 +177,12 @@ export function createFlightInputManager(options: {
   initialThrottle?: number;
   initialGearDown?: boolean;
   rudderSign?: 1 | -1;
+  /**
+   * The throttle above which the aircraft's afterburner lights. Unless
+   * `osfs.input.afterburnerOneMotion` is on, a held raise that starts below it
+   * stops there, and a fresh one from there goes on.
+   */
+  afterburnerDetent?: number;
   /** Paused before this input existed, during loading or by a saved flight. */
   initialPaused?: boolean;
   onPausedChange?: (paused: boolean) => void;
@@ -203,6 +209,8 @@ export function createFlightInputManager(options: {
     brake: 0,
   };
   let throttleTarget = initialThrottle;
+  /** Whether the held raise began below the afterburner detent; null while none is held. */
+  let raiseStopsAtDetent: boolean | null = null;
   let leverBrake = 0;
   let paused = options.initialPaused ?? false;
   let gearDown = options.initialGearDown ?? true;
@@ -336,6 +344,17 @@ export function createFlightInputManager(options: {
     Math.min(maximum, Math.max(minimum, value))
   );
 
+  /** Moves the throttle at a held key or button's rate, stopping a raise from below at the afterburner detent. */
+  const stepThrottle = (rate: number, dt: number): void => {
+    const detent = options.afterburnerDetent !== undefined && !parameters.get("osfs.input.afterburnerOneMotion")
+      ? options.afterburnerDetent : null;
+    if (rate <= 0) raiseStopsAtDetent = null;
+    else raiseStopsAtDetent ??= detent !== null && throttleTarget < detent;
+    const next = clamp(throttleTarget + rate * parameters.get("osfs.input.throttleRate") * dt, 0, 1);
+    // Never pulls down a throttle something else put past the detent meanwhile.
+    throttleTarget = raiseStopsAtDetent && detent !== null ? Math.min(next, Math.max(throttleTarget, detent)) : next;
+  };
+
   const resetGamepadBindingInputs = (): void => {
     gamepadBindingControls = emptyGamepadBindingControls();
     keyboardBindingAxes.clear();
@@ -468,12 +487,13 @@ export function createFlightInputManager(options: {
   const integratePersistentControls = (dt: number): Pick<ControlSurfaceState, "throttle" | "pitchTrim" | "rollTrim" | "flaps" | "brake"> => {
     let flaps = smoothed.flaps;
     let brake = 0;
+    let throttleRate = 0;
     for (const key of keysDown) {
       const binding = KEY_BINDINGS[key];
       if (!binding) continue;
       if (binding.throttle !== undefined) {
         leverBrake = 0;
-        throttleTarget = Math.min(1, Math.max(0, throttleTarget + binding.throttle * parameters.get("osfs.input.throttleRate") * dt));
+        throttleRate += binding.throttle;
       }
       if (binding.flaps !== undefined) {
         const next = Math.min(1, Math.max(0, flaps + binding.flaps * dt * 0.5));
@@ -482,6 +502,7 @@ export function createFlightInputManager(options: {
       }
       if (binding.brake !== undefined) brake = binding.brake;
     }
+    stepThrottle(throttleRate, dt);
     return { throttle: throttleTarget, pitchTrim: smoothed.pitchTrim, rollTrim: smoothed.rollTrim, flaps, brake };
   };
 
@@ -583,11 +604,7 @@ export function createFlightInputManager(options: {
       throttleTarget = clamp(binding.throttle, 0, 1);
     } else {
       if (binding.throttleRate !== 0) leverBrake = 0;
-      throttleTarget = clamp(
-        throttleTarget + binding.throttleRate * parameters.get("osfs.input.throttleRate") * dt,
-        0,
-        1,
-      );
+      stepThrottle(binding.throttleRate, dt);
     }
 
     const rates = keyboardSettings.mode === "assist" ? (options.getBodyRates?.() ?? null) : null;

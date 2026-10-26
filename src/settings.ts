@@ -31,6 +31,7 @@ const ORBIT = { tab: "controls", section: "orbit" } as const;
 const FEEDBACK = { tab: "controls", section: "feedback" } as const;
 const STOVL = { tab: "controls", section: "stovl" } as const;
 const BRAKING = { tab: "controls", section: "braking" } as const;
+const AFTERBURNER = { tab: "controls", section: "afterburner" } as const;
 /** The pre-registry defaults of the keyboard stick, which the migration and the Reset button share. */
 const KEYBOARD_STICK_SOURCE = "controls/src/keyboardStickResponse.ts";
 
@@ -47,6 +48,7 @@ export const CONTROLS_SECTION_TITLES_2: readonly (readonly [tab: string, section
   ["controls", "feedback", "Feedback"],
   ["controls", "stovl", "F-35B STOVL"],
   ["controls", "braking", "F-35B braking"],
+  ["controls", "afterburner", "Afterburner"],
 ];
 
 const main = <T extends { tab: string; section: string }>(home: T) => ({ ...home, level: "main" as const });
@@ -206,6 +208,18 @@ export const CONTROLS_PARAMETERS_3 = [
     home: main(BRAKING),
     appliesLive: true,
     source: "engines/src/throttleLever.ts",
+  },
+  {
+    id: "osfs.input.afterburnerOneMotion",
+    label: "Enter afterburner in one push",
+    description: "Lets one held throttle key or button, or one drag of the throttle lever on this screen or the phone, carry the throttle straight into afterburner. Off, it stops at the afterburner detent; let go and push again to light the afterburner. Leaving the afterburner is the same either way, and a controller's throttle axis is never stopped.",
+    unit: "none",
+    kind: "boolean",
+    default: false,
+    defaultReason: "Lighting the afterburner takes a deliberate second push, so going to full dry power does not light it by accident.",
+    home: main(AFTERBURNER),
+    appliesLive: true,
+    source: "controls/src/flightInputManager.ts",
   },
   {
     id: "osfs.aircraft.stovlConversion",

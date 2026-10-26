@@ -2,8 +2,10 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JSBSimSdk } from "@felipegalind0/jsbsim";
+import type { ActionIntentFrame } from "@felipegalind0/gamepad-tools/core";
 import { createBrowserInputSource } from "@felipegalind0/gamepad-tools/browser";
 import { createFlightInputManager } from "../src/flightInputManager";
+import { controlsParameterDefaults } from "../src/settings";
 import type { ControlSurfaceState, FlightInputManager } from "../src/flightInputManager";
 
 describe("flightInputManager keyboard roll", () => {
@@ -409,6 +411,83 @@ describe("flightInputManager keyboard roll", () => {
       trim.remove();
       search.remove();
     }
+  });
+});
+
+describe("flightInputManager afterburner detent", () => {
+  /** What the Shift and Ctrl throttle binding reports: 1 raising, -1 lowering, 0 let go. */
+  const throttleKeys = (value: number) => ({
+    frameId: 0, timestamp: 0, dt: 0, context: "flight", conflicts: [],
+    intents: [{ kind: "rate", actionId: "flight.throttleRate", value,
+      source: { inputKind: "keyboard", selector: { kind: "key", code: "ShiftLeft" }, bindingId: "key-throttle" } }],
+  }) as unknown as ActionIntentFrame;
+
+  function bound(oneMotion = false) {
+    const input = createFlightInputManager({
+      initialThrottle: 0.9, afterburnerDetent: 0.99,
+      parameters: controlsParameterDefaults({ "osfs.input.afterburnerOneMotion": oneMotion }),
+    });
+    input.setGamepadToolsActive(true);
+    input.applyGamepadBindingIntents(throttleKeys(0));
+    return input;
+  }
+
+  beforeEach(() => {
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: vi.fn(() => []) });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("stops one held Shift at the detent, and a second press lights the afterburner", () => {
+    const input = bound();
+    input.applyGamepadBindingIntents(throttleKeys(1));
+    expect(input.poll(1).throttle).toBe(0.99);
+    expect(input.poll(1).throttle).toBe(0.99);
+    input.applyGamepadBindingIntents(throttleKeys(0));
+    input.poll(0.1);
+    input.applyGamepadBindingIntents(throttleKeys(1));
+    expect(input.poll(0.01).throttle).toBeGreaterThan(0.99);
+    expect(input.poll(1).throttle).toBe(1);
+    // Leaving the afterburner is as it always was.
+    input.applyGamepadBindingIntents(throttleKeys(-1));
+    expect(input.poll(0.5).throttle).toBe(0.75);
+  });
+
+  it("does not pull back a throttle the lever put past the detent during the hold", () => {
+    const input = bound();
+    input.applyGamepadBindingIntents(throttleKeys(1));
+    input.poll(0.01);
+    input.setThrottle(1);
+    expect(input.poll(0.1).throttle).toBe(1);
+  });
+
+  it("lets one hold through when the pilot opts in", () => {
+    const input = bound(true);
+    input.applyGamepadBindingIntents(throttleKeys(1));
+    expect(input.poll(1).throttle).toBe(1);
+  });
+
+  it("stops the keyboard without controller bindings at the detent too", () => {
+    const input = createFlightInputManager({ initialThrottle: 0.9, afterburnerDetent: 0.99 });
+    const detach = input.attach(window);
+    try {
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "ShiftLeft" }));
+      expect(input.poll(1).throttle).toBe(0.99);
+      window.dispatchEvent(new KeyboardEvent("keyup", { code: "ShiftLeft" }));
+      input.poll(0.1);
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "ShiftLeft" }));
+      expect(input.poll(1).throttle).toBe(1);
+    } finally { detach(); }
+  });
+
+  it("leaves an aircraft without an afterburner as it was", () => {
+    const input = createFlightInputManager({ initialThrottle: 0.9 });
+    input.setGamepadToolsActive(true);
+    input.applyGamepadBindingIntents(throttleKeys(0));
+    input.applyGamepadBindingIntents(throttleKeys(1));
+    expect(input.poll(1).throttle).toBe(1);
   });
 });
 
