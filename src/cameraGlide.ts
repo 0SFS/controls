@@ -67,6 +67,11 @@ export interface CameraGlide {
   /** A finger landed: the camera stops where it is. */
   cancel(): void;
   /**
+   * A finger joined those already down: what glides on from an earlier lift
+   * stops where it is, and what the fingers down are moving goes on.
+   */
+  hold(): void;
+  /**
    * Moves the camera for the time since the last step. True while it has more
    * to move, or a release to watch for.
    */
@@ -201,6 +206,9 @@ export function createCameraGlide(options: CameraGlideOptions): CameraGlide {
       for (const channel of CHANNELS) channels[channel] = idle();
       fresh = false;
     },
+    hold() {
+      for (const channel of CHANNELS) if (!channels[channel].armed) channels[channel] = idle();
+    },
     step(now = clock()) {
       const previous = steppedAt ?? now - FRAME_MS;
       let elapsed = steppedAt === null ? FRAME_MS : Math.max(0, now - steppedAt);
@@ -251,8 +259,10 @@ export interface TouchSurfaceFrame {
 
 /**
  * Drives a glide from a touch surface that counts its fingers, as FOSS Earth's
- * touchscreen does: a finger landing stops the glide, movement while a finger
- * is down is armed, and a finger lifting lets it glide on. Movement with none
+ * touchscreen does: the first finger landing stops the glide, and one joining
+ * it stops only what glides on from an earlier lift. Movement while a finger
+ * is down is armed, and a finger lifting lets it glide on: a pinch's zoom when
+ * either of its two lifts, a swipe's turn once the last has. Movement with none
  * down, such as an arrow key, only glides. A surface that does not count
  * (`fingers` null, one that predates it) ends a gesture when its movement has
  * been quiet for `PINCH_RELEASE_GAP_MS`, and one that stops counting with a
@@ -262,7 +272,8 @@ export function createTouchSurfaceGlide(glide: CameraGlide): { frame(frame: Touc
   let before: number | null = null;
   return {
     frame({ fingers, yaw, pitch, zoom }) {
-      if (fingers !== null && before !== null && fingers > before) glide.cancel();
+      // A second finger joining a swipe leaves its turn going, so the swipe carries on into the pinch.
+      if (fingers !== null && before !== null && fingers > before) { if (before === 0) glide.cancel(); else glide.hold(); }
       // Movement that ends with a lift in this same frame was still the fingers'.
       const held = fingers === null ? null : Math.max(fingers, before ?? 0) > 0;
       const gap = held === null ? PINCH_RELEASE_GAP_MS : undefined;
@@ -274,9 +285,11 @@ export function createTouchSurfaceGlide(glide: CameraGlide): { frame(frame: Touc
         glide.zoom(zoom);
         if (held !== false) glide.arm("zoom", gap);
       }
-      if (before !== null && (fingers === null ? before > 0 : fingers < before)) {
-        glide.release("orbit");
-        glide.release("zoom");
+      // Two fingers that turn the view as they pinch leave one that goes on turning it.
+      const left = fingers ?? 0;
+      if (before !== null && left < before) {
+        if (left < 2) glide.release("zoom");
+        if (left === 0) glide.release("orbit");
       }
       before = fingers;
     },

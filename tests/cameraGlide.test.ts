@@ -301,16 +301,64 @@ describe("touch surface glide", () => {
     expect(s.glide.isActive()).toBe(false);
   });
 
-  it("stops the swipe for a pinch, and glides the pinch on when a finger of it lifts", () => {
+  it("finishes a swipe's turn without gliding it when a second finger lands to pinch, and glides the pinch on when a finger of it lifts", () => {
     const s = surface();
     s.touch(1, { yaw: 0.05 });
     s.touch(2);
-    expect(s.glide.isActive("orbit")).toBe(false);
     for (let index = 0; index < 6; index++) s.touch(2, { zoom: 1.02 });
     s.touch(1);
     expect(s.glide.isActive("zoom")).toBe(true);
     s.run(s.now + 3000);
-    expect(s.logZoom).toBeGreaterThan(6 * Math.log(1.02));
+    // Well past the pinch's own zoom: unreleased, it would end there, give or take a rounding.
+    expect(s.logZoom).toBeGreaterThan(6 * Math.log(1.02) + 0.1);
+    // The view ends where the finger took it: the swipe was neither cut short nor flung.
+    expect(s.turned.yaw).toBeCloseTo(0.05, 12);
+  });
+
+  it("carries a swipe on into a turning pinch without a hitch when a second finger joins it", () => {
+    const s = surface();
+    s.touch(0);
+    for (let index = 0; index < 15; index++) s.touch(1, { yaw: 0.02 });
+    const before = s.turned.yaw;
+    s.touch(2, { yaw: 0.02 });
+    // The turn per frame goes on as it was, rather than dropping while the glide starts again.
+    expect(s.turned.yaw - before).toBeGreaterThan(0.015);
+    for (let index = 0; index < 14; index++) s.touch(2, { yaw: 0.02, zoom: 1.01 });
+    s.touch(1);
+    s.run(s.now + 3000);
+    // All the fingers' turn, none of it dropped, and no glide: a finger is still down.
+    expect(s.turned.yaw).toBeCloseTo(0.6, 12);
+  });
+
+  it("stops a pinch still gliding from a lift when the finger lands again, leaving the other finger's turn", () => {
+    const s = surface();
+    s.touch(1);
+    s.touch(2);
+    for (let index = 0; index < 6; index++) s.touch(2, { yaw: 0.01, zoom: 1.02 });
+    s.touch(1, { yaw: 0.01 });
+    expect(s.glide.isActive("zoom")).toBe(true);
+    s.touch(2, { yaw: 0.01 });
+    expect(s.glide.isActive("zoom")).toBe(false);
+    s.run(s.now + 3000);
+    expect(s.turned.yaw).toBeCloseTo(0.08, 12);
+  });
+
+  it("goes on turning with the finger left when one of two that turned and pinched lifts, gliding only the pinch", () => {
+    const s = surface();
+    s.touch(1);
+    s.touch(2);
+    for (let index = 0; index < 6; index++) s.touch(2, { yaw: 0.01, zoom: 1.02 });
+    s.touch(1);
+    expect(s.glide.isActive("zoom")).toBe(true);
+    // The finger left rests: the view stops turning where it took it, with no glide under the finger.
+    s.run(s.now + 3000);
+    expect(s.turned.yaw).toBeCloseTo(0.06, 12);
+    expect(s.logZoom).toBeGreaterThan(6 * Math.log(1.02) + 0.1);
+    // It swipes on and lifts: that swipe glides on.
+    for (let index = 0; index < 6; index++) s.touch(1, { yaw: 0.01 });
+    s.touch(0);
+    s.run(s.now + 3000);
+    expect(s.turned.yaw).toBeGreaterThan(0.12 + 0.01);
   });
 
   it("only glides movement with no finger down, such as an arrow key", () => {
