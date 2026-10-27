@@ -18,6 +18,10 @@
       "source": "./src/autoTrim.ts",
       "default": "./src/autoTrim.ts"
     },
+    "./cameraGlide": {
+      "source": "./src/cameraGlide.ts",
+      "default": "./src/cameraGlide.ts"
+    },
     "./flightCameraInput": {
       "source": "./src/flightCameraInput.ts",
       "default": "./src/flightCameraInput.ts"

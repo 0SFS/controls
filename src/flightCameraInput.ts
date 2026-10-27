@@ -2,6 +2,7 @@ import {
   DEFAULT_ORBIT_INVERT_SETTINGS, isSafariGestureSupported,
   type HudInputMode, type InputSensitivitySettings, type OrbitInvertSettings,
 } from "foss-earth/input";
+import { PINCH_RELEASE_GAP_MS, type CameraGlide } from "./cameraGlide";
 
 export interface FlightCameraInputOptions {
   getMode(): HudInputMode;
@@ -15,6 +16,13 @@ export interface FlightCameraInputOptions {
    * browser synthesises after a touch gesture ends, in ms.
    */
   getTouchWheelCooldownMs(): number;
+  /**
+   * FOSS Earth's glide hooks, which the host's `zoom` feeds: a pinch arms the
+   * zoom's release, its fingers lifting release it, and a finger landing on
+   * the canvas stops the glide. A trackpad pinch that no event ends is
+   * released once it has been quiet for `PINCH_RELEASE_GAP_MS`.
+   */
+  glide?: Pick<CameraGlide, "arm" | "release" | "cancel">;
 }
 
 /** Canvas gestures only; keyboard/gamepad physics input remains independent. */
@@ -52,6 +60,12 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
   };
   const zoom = (factor: number, mode: HudInputMode = options.getMode()) =>
     options.zoom(Math.pow(factor, options.getSensitivity()[mode].zoom));
+  // A pinch does not go on by itself once the fingers stop, as a trackpad's
+  // swipe does, so its zoom glides on from its release. A mouse notch only glides.
+  const pinch = (factor: number, mode?: HudInputMode) => {
+    zoom(factor, mode);
+    if (factor !== 1) options.glide?.arm("zoom", PINCH_RELEASE_GAP_MS);
+  };
   const clearDrag = () => {
     const id = drag?.id;
     drag = null;
@@ -88,7 +102,7 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
     if (options.getMode() === "mouse") zoom(Math.exp(Math.max(-1, Math.min(1, event.deltaY * unit * 0.002))));
     else if (event.ctrlKey) {
       // Safari emits native GestureEvents for the same pinch; never apply both streams.
-      if (!safari) zoom(Math.exp(Math.max(-1, Math.min(1, event.deltaY * unit * 0.01))));
+      if (!safari) pinch(Math.exp(Math.max(-1, Math.min(1, event.deltaY * unit * 0.01))));
     } else if (gestureScale === null && !touchBlocksWheel()) {
       // Android Firefox often synthesizes wheel pans alongside touchmove with the
       // opposite delta sign. Prefer the touch path while fingers are down.
@@ -105,11 +119,15 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
     event.preventDefault();
     const scale = event.scale;
     if (options.getMode() === "trackpad" && gestureScale !== null && scale && Number.isFinite(scale) && scale > 0) {
-      zoom(gestureScale / scale);
+      pinch(gestureScale / scale);
       gestureScale = scale;
     }
   });
-  listen(canvas, "gestureend", (event: Event) => { event.preventDefault(); gestureScale = null; });
+  listen(canvas, "gestureend", (event: Event) => {
+    event.preventDefault();
+    gestureScale = null;
+    options.glide?.release("zoom");
+  });
   const readTouch = (event: TouchEvent) => {
     const contacts = Array.from(event.touches)
       .filter(contact => ownedTouches.has(contact.identifier))
@@ -126,11 +144,16 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
   listen(canvas, "touchstart", (event: TouchEvent) => {
     // A world interaction can reserve its press before camera navigation.
     if (event.defaultPrevented) return;
+    let landed = false;
     for (const contact of Array.from(event.changedTouches)) {
-      if (contact.target === canvas) ownedTouches.add(contact.identifier);
+      if (contact.target !== canvas || ownedTouches.has(contact.identifier)) continue;
+      ownedTouches.add(contact.identifier);
+      landed = true;
     }
     if (ownedTouches.size === 0) return;
     event.preventDefault();
+    // A finger landing on the canvas stops the glide where it is.
+    if (landed) options.glide?.cancel();
     gestureScale = null;
     touch = readTouch(event);
     setOrbitActive(touch !== null);
@@ -148,7 +171,7 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
       // Older code used (prev - next), which felt inverted on Android touch
       // relative to desktop Firefox trackpad wheel pans.
       orbit(next.x - touch.x, next.y - touch.y, "touch");
-      if (touch.ids.length === 2 && touch.distance > 0 && next.distance > 0) zoom(touch.distance / next.distance, "touch");
+      if (touch.ids.length === 2 && touch.distance > 0 && next.distance > 0) pinch(touch.distance / next.distance, "touch");
     }
     setOrbitActive(next !== null && gestureScale === null);
     touch = next;
@@ -157,7 +180,10 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
     listen(canvas, name, (event: TouchEvent) => {
       if (ownedTouches.size === 0) return;
       event.preventDefault();
-      for (const contact of Array.from(event.changedTouches)) ownedTouches.delete(contact.identifier);
+      let lifted = false;
+      for (const contact of Array.from(event.changedTouches)) lifted = ownedTouches.delete(contact.identifier) || lifted;
+      // A pinch's finger lifted: its zoom glides on.
+      if (lifted) options.glide?.release("zoom");
       const nextTouch = readTouch(event);
       touch = nextTouch;
       setOrbitActive(nextTouch !== null);

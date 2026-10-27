@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadInputSensitivityPreference, type HudInputMode } from "foss-earth/input";
 import { controlsParameterDefaults } from "../src/settings";
 import { attachFlightCameraInput, type FlightCameraInputOptions } from "../src/flightCameraInput";
+import { PINCH_RELEASE_GAP_MS } from "../src/cameraGlide";
 
 const getTouchWheelCooldownMs = () => controlsParameterDefaults().get("osfs.input.touchWheelCooldown");
 
@@ -345,5 +346,88 @@ describe("flight camera gestures", () => {
     expect(s.wheel({ deltaY: 20 }).defaultPrevented).toBe(false);
     expect(s.zoom).not.toHaveBeenCalled();
     expect(s.canvas.style.touchAction).not.toBe("none");
+  });
+});
+
+describe("flight camera glide hooks", () => {
+  const hooks = () => ({ arm: vi.fn(), release: vi.fn(), cancel: vi.fn() });
+  const gesture = (canvas: HTMLCanvasElement, name: string, scale: number) => {
+    const event = new Event(name, { cancelable: true });
+    Object.assign(event, { scale });
+    canvas.dispatchEvent(event);
+  };
+
+  it("arms a trackpad pinch to glide on once it goes quiet, but not a mouse wheel or a swipe", () => {
+    const glide = hooks();
+    const s = setup("mouse", { glide });
+    s.wheel({ deltaY: 100 });
+    s.wheel({ deltaY: 100, ctrlKey: true });
+    expect(s.zoom).toHaveBeenCalledTimes(2);
+    expect(glide.arm).not.toHaveBeenCalled();
+    s.setMode("trackpad");
+    s.wheel({ deltaY: -10, ctrlKey: true });
+    expect(s.zoom).toHaveBeenCalledTimes(3);
+    expect(glide.arm.mock.calls).toEqual([["zoom", PINCH_RELEASE_GAP_MS]]);
+    s.wheel({ deltaX: 10, deltaY: 20 });
+    expect(s.orbit).toHaveBeenCalledTimes(1);
+    expect(glide.arm).toHaveBeenCalledTimes(1);
+    expect(glide.release).not.toHaveBeenCalled();
+    expect(glide.cancel).not.toHaveBeenCalled();
+  });
+
+  it("arms a Safari pinch while it zooms and releases it when the gesture ends", () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh Safari");
+    vi.stubGlobal("GestureEvent", Event);
+    const glide = hooks();
+    const s = setup("trackpad", { glide });
+    s.wheel({ ctrlKey: true, deltaY: -20 });
+    gesture(s.canvas, "gesturestart", 1);
+    gesture(s.canvas, "gesturechange", 1);
+    expect(glide.arm).not.toHaveBeenCalled();
+    gesture(s.canvas, "gesturechange", 2);
+    expect(s.zoom.mock.calls).toEqual([[1], [0.5]]);
+    expect(glide.arm.mock.calls).toEqual([["zoom", PINCH_RELEASE_GAP_MS]]);
+    expect(glide.release).not.toHaveBeenCalled();
+    gesture(s.canvas, "gestureend", 2);
+    expect(glide.release.mock.calls).toEqual([["zoom"]]);
+  });
+
+  it("stops the glide when a finger lands on the canvas, and glides a pinch on when one of its fingers lifts", () => {
+    const glide = hooks();
+    const s = setup("touch", { glide });
+    s.touches("touchstart", [[0, 0]]);
+    expect(glide.cancel).toHaveBeenCalledTimes(1);
+    s.touches("touchmove", [[10, 10]]);
+    expect(glide.arm).not.toHaveBeenCalled();
+    s.touches("touchstart", [[10, 10], [30, 10]]);
+    expect(glide.cancel).toHaveBeenCalledTimes(2);
+    s.touches("touchmove", [[5, 10], [35, 10]]);
+    expect(s.zoom).toHaveBeenLastCalledWith(20 / 30);
+    expect(glide.arm.mock.calls).toEqual([["zoom", PINCH_RELEASE_GAP_MS]]);
+    expect(glide.release).not.toHaveBeenCalled();
+    s.touches("touchend", [[5, 10]]);
+    expect(glide.release.mock.calls).toEqual([["zoom"]]);
+    expect(glide.cancel).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the glide alone for touches that are not the canvas's", () => {
+    const glide = hooks();
+    const s = setup("touch", { glide });
+    const ui = document.createElement("div");
+    const camera = contact(2, s.canvas, 200, 100);
+    dispatchTouch(s.canvas, "touchstart", [camera], [camera]);
+    expect(glide.cancel).toHaveBeenCalledTimes(1);
+    const foreign = contact(1, ui, 0, 0);
+    dispatchTouch(s.canvas, "touchstart", [camera, foreign], [foreign]);
+    dispatchTouch(s.canvas, "touchend", [camera], [foreign]);
+    expect(glide.cancel).toHaveBeenCalledTimes(1);
+    expect(glide.release).not.toHaveBeenCalled();
+
+    const parent = document.createElement("div");
+    parent.append(s.canvas);
+    parent.addEventListener("touchstart", event => event.preventDefault(), { capture: true });
+    const reserved = contact(3, s.canvas, 50, 50);
+    dispatchTouch(s.canvas, "touchstart", [camera, reserved], [reserved]);
+    expect(glide.cancel).toHaveBeenCalledTimes(1);
   });
 });
