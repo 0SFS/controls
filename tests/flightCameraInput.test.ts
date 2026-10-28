@@ -83,6 +83,36 @@ describe("flight camera gestures", () => {
     s.wheel({ deltaY: -10, ctrlKey: true });
     expect(s.zoom.mock.calls[0][0]).toBeLessThan(1);
   });
+  it.each([false, true])("uses Option/Alt for swipe zoom while held Control keeps orbiting (Safari: %s)", (safari) => {
+    if (safari) {
+      vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh Safari");
+      vi.stubGlobal("GestureEvent", Event);
+    }
+    const s = setup("trackpad");
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Control", code: "ControlLeft", ctrlKey: true }));
+    s.wheel({ deltaX: 10, deltaY: 20, ctrlKey: true });
+    expect(s.orbit.mock.calls).toEqual([[-0.05, -0.1]]);
+    expect(s.zoom).not.toHaveBeenCalled();
+
+    // Option/Alt still works while a flight control is held.
+    s.wheel({ deltaY: -10, ctrlKey: true, altKey: true });
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Control", code: "ControlLeft" }));
+    s.wheel({ deltaY: 10, altKey: true });
+    expect(s.zoom.mock.calls).toEqual([[Math.exp(-0.1)], [Math.exp(0.1)]]);
+    expect(s.orbit).toHaveBeenCalledTimes(1);
+  });
+  it.each(["keyup", "blur"])("recognizes native pinch again after Control is cleared by %s", (release) => {
+    const s = setup("trackpad");
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Control", code: "ControlRight", ctrlKey: true }));
+    s.wheel({ deltaY: -10, ctrlKey: true });
+    expect(s.zoom).not.toHaveBeenCalled();
+    window.dispatchEvent(release === "keyup"
+      ? new KeyboardEvent("keyup", { key: "Control", code: "ControlRight" })
+      : new Event("blur"));
+    s.wheel({ deltaY: -10, ctrlKey: true });
+    expect(s.zoom).toHaveBeenCalledWith(Math.exp(-0.1));
+    expect(s.orbit).toHaveBeenCalledTimes(1);
+  });
   it("uses incremental native pinch scales without swipe orbit during pinch", () => {
     const s = setup("trackpad");
     const gesture = (name: string, scale: number) => {

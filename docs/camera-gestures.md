@@ -3,6 +3,10 @@
 What each surface gives the flight camera, and why a Mac trackpad cannot turn
 the view and zoom it in one gesture as a touchscreen can. Checked 2026-10-27.
 
+In trackpad mode, hold **Option** on macOS or **Alt** on Windows while swiping
+with two fingers to zoom. An ordinary swipe turns the view, including while
+**Control** is held for a flight control. Native pinch gestures still zoom.
+
 ## Two fingers at once
 
 | Surface | What the page receives | Two fingers |
@@ -33,6 +37,17 @@ itself, decides what the gesture is, and hands the page only the result:
 - in Safari, a pinch also comes as `gesturestart`, `gesturechange` and
   `gestureend`, carrying `scale` and `rotation`. `flightCameraInput.ts` takes
   Safari's pinch from these and ignores its ctrl+wheel copy.
+
+The camera tracks physical Control presses separately from the browser's
+synthetic pinch modifier, so holding Control while swiping keeps turning the
+view. Option/Alt selects swipe zoom in every browser, including Safari.
+Control can be assigned to throttle or climb/descent, so treating `ctrlKey`
+alone as a zoom request makes ordinary camera movement zoom accidentally while
+the pilot changes power. Keep Option/Alt as the explicit swipe-zoom modifier.
+Keyboard events track the physical Control state; keyup and window blur clear
+it. In browsers that report pinches only as ctrl+wheel, a pinch while physical
+Control is held cannot be distinguished from a swipe and is treated as orbit;
+release Control or hold Option/Alt to zoom.
 
 macOS picks one kind per gesture and keeps it until the fingers lift. A probe
 page that logged every event while the user pinched and slid at once, in

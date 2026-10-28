@@ -33,6 +33,9 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
   canvas.style.touchAction = "none";
   let drag: { id: number; x: number; y: number } | null = null;
   let gestureScale: number | null = null;
+  // Browsers also mark native trackpad pinches as ctrl+wheel. Only a keyboard
+  // event tells us that Control is physically held for a flight control.
+  let controlHeld = false;
   // TouchEvent.touches includes fingers on the HUD and other windows too.
   // Only contacts whose unconsumed press reached this canvas belong to it.
   const ownedTouches = new Set<number>();
@@ -93,14 +96,19 @@ export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: Flig
   for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) {
     listen(owner, name, (event: PointerEvent) => { if (event.pointerId === drag?.id) clearDrag(); });
   }
-  listen(owner, "blur", () => { clearDrag(); ownedTouches.clear(); touch = null; gestureScale = null; });
+  listen(owner, "keydown", (event: KeyboardEvent) => { controlHeld = event.ctrlKey || event.key === "Control"; });
+  listen(owner, "keyup", (event: KeyboardEvent) => { controlHeld = event.ctrlKey; });
+  listen(owner, "blur", () => { clearDrag(); ownedTouches.clear(); touch = null; gestureScale = null; controlHeld = false; });
   // Suppress the native right-button menu, including platforms firing it after pointerup.
   listen(canvas, "contextmenu", (event: MouseEvent) => { event.preventDefault(); });
   listen(canvas, "wheel", (event: WheelEvent) => {
     event.preventDefault();
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight || 800 : 1;
     if (options.getMode() === "mouse") zoom(Math.exp(Math.max(-1, Math.min(1, event.deltaY * unit * 0.002))));
-    else if (event.ctrlKey) {
+    else if (event.altKey) {
+      // Option/Alt turns a two-finger swipe into zoom, including in Safari.
+      zoom(Math.exp(Math.max(-1, Math.min(1, event.deltaY * unit * 0.01))));
+    } else if (event.ctrlKey && !controlHeld) {
       // Safari emits native GestureEvents for the same pinch; never apply both streams.
       if (!safari) pinch(Math.exp(Math.max(-1, Math.min(1, event.deltaY * unit * 0.01))));
     } else if (gestureScale === null && !touchBlocksWheel()) {
