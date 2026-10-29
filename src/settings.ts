@@ -1,3 +1,4 @@
+import { KEY_PAIRS } from "./keyboardAxisBindings";
 import type { ParameterSpec } from "foss-earth/settings";
 import {
   catalogueDefaults,
@@ -26,6 +27,7 @@ const START = { tab: "aircraft", section: "start" } as const;
 const ASSISTS = { tab: "aircraft", section: "assists" } as const;
 const FLIGHT_CONTROLS = { tab: "aircraft", section: "flight-controls" } as const;
 const GAMEPAD = { tab: "controls", section: "gamepad" } as const;
+const KEY_PAIRS_HOME = { tab: "controls", section: "keys" } as const;
 const KEYBOARD = { tab: "controls", section: "keyboard" } as const;
 const ORBIT = { tab: "controls", section: "orbit" } as const;
 const FEEDBACK = { tab: "controls", section: "feedback" } as const;
@@ -44,6 +46,7 @@ export const CONTROLS_SECTION_TITLES_1: readonly (readonly [tab: string, section
 /** Section titles for the sections only the flight controls' parameters are in, by tab and section id. */
 export const CONTROLS_SECTION_TITLES_2: readonly (readonly [tab: string, section: string, title: string])[] = [
   ["controls", "gamepad", "Gamepad"],
+  ["controls", "keys", "Keyboard axes"],
   ["controls", "keyboard", "Keyboard response"],
   ["controls", "feedback", "Feedback"],
   ["controls", "stovl", "F-35B STOVL"],
@@ -401,6 +404,13 @@ export const CONTROLS_PARAMETERS_3 = [
     source: "controls/src/flightInputManager.ts",
   },
 
+  ...([
+    ["pitch", "Pitch", "ws"], ["roll", "Roll / lateral", "ad"], ["yaw", "Yaw", "qe"], ["power", "Power / climb", "shift-ctrl"],
+  ] as const).map(([axis, label, value]) => ({
+    id: `osfs.input.keys.${axis}` as const, label, description: "Choose the key pair for this flight axis. Up/right raises the command; down/left lowers it. DJI power commands climb/descent rate and centers on release. Choosing an assigned pair swaps the two axes.",
+    unit: "none", kind: "choice", choices: Object.entries(KEY_PAIRS).map(([id, pair]) => ({ id, label: pair.label })),
+    default: value, defaultReason: "The aircraft's keyboard mapping, unless the pilot chooses another pair.", home: main(KEY_PAIRS_HOME), appliesLive: true, source: "controls/src/keyboardAxisBindings.ts",
+  } satisfies ParameterSpec)),
   // Controls → Keyboard response.
   {
     id: "osfs.input.keyboard.mode",

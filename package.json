@@ -62,7 +62,15 @@
       "source": "./src/wheelCueBus.ts",
       "default": "./src/wheelCueBus.ts"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./keyboardAxisBindings": {
+      "source": "./src/keyboardAxisBindings.ts",
+      "default": "./src/keyboardAxisBindings.ts"
+    },
+    "./climbRateLever": {
+      "source": "./src/climbRateLever.ts",
+      "default": "./src/climbRateLever.ts"
+    }
   },
   "peerDependencies": {
     "@0sfs/engines": "0.1.0",

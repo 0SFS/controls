@@ -18,7 +18,11 @@ import {
   type KeyboardStickSettings,
 } from "./keyboardStickSettings";
 
+import { KEY_PAIRS, readKeyboardAxes, keyboardAxisValue } from "./keyboardAxisBindings";
+
 export interface ControlSurfaceState {
+  /** Centered climb/descent command, separate from motor throttle. */
+  climb?: number;
   elevator: number;
   aileron: number;
   rudder: number;
@@ -29,17 +33,7 @@ export interface ControlSurfaceState {
   brake: number;
 }
 
-const KEY_BINDINGS: Record<string, Partial<ControlSurfaceState>> = {
-  KeyW: { elevator: 1 },
-  KeyS: { elevator: -1 },
-  KeyA: { aileron: -1 },
-  KeyD: { aileron: 1 },
-  KeyQ: { rudder: -1 },
-  KeyE: { rudder: 1 },
-  ShiftLeft: { throttle: 1 },
-  ShiftRight: { throttle: 1 },
-  ControlLeft: { throttle: -1 },
-  ControlRight: { throttle: -1 },
+const FIXED_KEY_BINDINGS: Record<string, Partial<ControlSurfaceState>> = {
   KeyF: { flaps: 1 },
   // R, not G: G is the landing gear, which is what every other simulator binds
   // it to and what the gear button in the HUD is labelled.
@@ -75,6 +69,7 @@ interface GamepadBindingControls {
   flaps: number | null;
   flapsRate: number;
   brake: number;
+  weaponRelease: number;
 }
 
 const emptyGamepadBindingControls = (): GamepadBindingControls => ({
@@ -90,6 +85,7 @@ const emptyGamepadBindingControls = (): GamepadBindingControls => ({
   flaps: null,
   flapsRate: 0,
   brake: 0,
+  weaponRelease: 0,
 });
 
 function readGamepad(slot = 0): GamepadSnapshot | null {
@@ -125,6 +121,8 @@ export interface FlightInputManager {
   getFlapsInputRevision(): number;
   resetControls(throttle: number): void;
   setThrottle(value: number): void;
+  setClimbRateCommand(value: number): void;
+  getClimbRateCommand(): number;
   /** Combined lever: throttle above idle, wheel braking until the lever releases it. */
   setThrottleBrake(throttle: number, brake: number): void;
   /** The app moving the throttle, not the pilot: an engine that is off holds it at idle. */
@@ -155,6 +153,8 @@ export interface FlightInputManager {
   isPaused(): boolean;
   /** Landing gear lever, 1 down and 0 up. A fixed-gear airframe ignores it. */
   getGearDownNorm(): number;
+  /** Trigger, 1 held. A press launches; holding fires the gun. */
+  getWeaponRelease(): number;
   setGearDown(down: boolean): void;
   /** Enables the profile-driven input path and suppresses legacy mappings. */
   setGamepadToolsActive(value: boolean): void;
@@ -175,6 +175,7 @@ export function createFlightInputManager(options: {
    */
   parameters?: ControlsParameterStore;
   initialThrottle?: number;
+  verticalControl?: "throttle" | "climb-rate";
   initialGearDown?: boolean;
   rudderSign?: 1 | -1;
   /**
@@ -398,6 +399,7 @@ export function createFlightInputManager(options: {
       flaps: aggregateBindingValue("flight.flaps", 0, 1),
       flapsRate: aggregateBindingValue("flight.flapsRate") ?? 0,
       brake: aggregateBindingValue("flight.brake", 0, 1) ?? 0,
+      weaponRelease: Math.min(1, Math.max(0, aggregateBindingValue("flight.weaponRelease", 0, 1) ?? 0)),
     };
   };
 
@@ -424,7 +426,8 @@ export function createFlightInputManager(options: {
       const bindingId = intent.source.bindingId;
       const value = intent.value;
       if (!Number.isFinite(value)) continue;
-      const persistentValue = intent.kind === "value" && intent.actionId !== "flight.brake";
+      const persistentValue = intent.kind === "value"
+        && intent.actionId !== "flight.brake" && intent.actionId !== "flight.weaponRelease";
       const baseline = bindingBaselines.get(bindingId);
       if (baseline === undefined) {
         bindingBaselines.set(bindingId, value);
@@ -452,12 +455,19 @@ export function createFlightInputManager(options: {
           ? changed || (newlyArmed && value !== 0)
           : value !== 0 && (changed || newlyArmed);
       }
-      hasLocalContinuousInput ||= Math.abs(value) > 0.001
+      hasLocalContinuousInput ||= intent.actionId !== "flight.weaponRelease"
+        && Math.abs(value) > 0.001
         && Math.abs(value - (bindingIntentValues.get(bindingId)?.value ?? 0)) > 0.001;
     }
 
     if (hasLocalContinuousInput || flapInputChanged) options.onLocalInput?.();
-    if (remoteOwned) return;
+    if (remoteOwned) {
+      const weaponRelease = [...nextValues.values()].reduce((sum, entry) => (
+        entry.actionId === "flight.weaponRelease" ? sum + entry.value : sum
+      ), 0);
+      gamepadBindingControls = { ...gamepadBindingControls, weaponRelease: Math.min(1, Math.max(0, weaponRelease)) };
+      return;
+    }
     if (flapInputChanged) flapsInputRevision++;
     // A synchronous phone handoff can clear the maps above. Restore this
     // frame's initiating input afterwards, and drop any disconnected sources.
@@ -470,18 +480,36 @@ export function createFlightInputManager(options: {
     refreshGamepadBindingControls();
   };
 
+  const keyBinding = (key: string): Partial<ControlSurfaceState> | undefined => {
+    const fixed = FIXED_KEY_BINDINGS[key];
+    const result: Partial<ControlSurfaceState> = {};
+    // Flaps and brakes keep their bindings; the four axes use one shared map.
+    if (fixed?.flaps !== undefined) result.flaps = fixed.flaps;
+    if (fixed?.brake !== undefined) result.brake = fixed.brake;
+    const axes = readKeyboardAxes(parameters);
+    for (const [axis, field] of [["pitch", "elevator"], ["roll", "aileron"], ["yaw", "rudder"], ["power", "throttle"]] as const) {
+      const pair = KEY_PAIRS[axes[axis]];
+      if (pair.positive.some(code => code === key)) result[field] = 1;
+      if (pair.negative.some(code => code === key)) result[field] = -1;
+    }
+    return Object.keys(result).length ? result : undefined;
+  };
+  let climbOverride: number | null = null;
+  let climbCommand = 0;
+  const climbMode = options.verticalControl === "climb-rate";
+  const setClimbCommand = (value: number) => { climbCommand = clamp(value); smoothed.climb = climbCommand; };
   const readKeyDirections = (): { elevator: number; aileron: number; rudder: number } => {
     let elevator = 0;
     let aileron = 0;
     let rudder = 0;
     for (const key of keysDown) {
-      const binding = KEY_BINDINGS[key];
+      const binding = keyBinding(key);
       if (!binding) continue;
-      if (binding.elevator !== undefined) elevator = binding.elevator;
-      if (binding.aileron !== undefined) aileron = binding.aileron;
-      if (binding.rudder !== undefined) rudder = binding.rudder;
+      if (binding.elevator !== undefined) elevator += binding.elevator;
+      if (binding.aileron !== undefined) aileron += binding.aileron;
+      if (binding.rudder !== undefined) rudder += binding.rudder;
     }
-    return { elevator, aileron, rudder };
+    return { elevator: clamp(elevator), aileron: clamp(aileron), rudder: clamp(rudder) };
   };
 
   const integratePersistentControls = (dt: number): Pick<ControlSurfaceState, "throttle" | "pitchTrim" | "rollTrim" | "flaps" | "brake"> => {
@@ -489,7 +517,7 @@ export function createFlightInputManager(options: {
     let brake = 0;
     let throttleRate = 0;
     for (const key of keysDown) {
-      const binding = KEY_BINDINGS[key];
+      const binding = keyBinding(key);
       if (!binding) continue;
       if (binding.throttle !== undefined) {
         leverBrake = 0;
@@ -502,7 +530,8 @@ export function createFlightInputManager(options: {
       }
       if (binding.brake !== undefined) brake = binding.brake;
     }
-    stepThrottle(throttleRate, dt);
+    if (climbMode) setClimbCommand(climbOverride ?? keyboardAxisValue(readKeyboardAxes(parameters).power, keysDown));
+    else stepThrottle(throttleRate, dt);
     return { throttle: throttleTarget, pitchTrim: smoothed.pitchTrim, rollTrim: smoothed.rollTrim, flaps, brake };
   };
 
@@ -599,7 +628,11 @@ export function createFlightInputManager(options: {
 
   const pollGamepadToolBindings = (dt: number): ControlSurfaceState => {
     const binding = gamepadBindingControls;
-    if (binding.throttle !== null) {
+    if (climbMode) {
+      // Rate buttons are instantaneous, never integrated as a throttle lever.
+      const rate = aggregateBindingValue("flight.climbRate");
+      setClimbCommand(climbOverride ?? rate ?? (binding.throttle !== null ? (binding.throttle * 2 - 1) : binding.throttleRate));
+    } else if (binding.throttle !== null) {
       leverBrake = 0;
       throttleTarget = clamp(binding.throttle, 0, 1);
     } else {
@@ -629,6 +662,7 @@ export function createFlightInputManager(options: {
       aileron,
       rudder,
       throttle: throttleTarget,
+      ...(climbMode ? { climb: climbCommand } : {}),
       pitchTrim,
       rollTrim,
       flaps,
@@ -655,7 +689,7 @@ export function createFlightInputManager(options: {
           return;
         }
         if (bindingCaptureActive || gamepadToolsActive) {
-          if (event.code in KEY_BINDINGS || event.code === "KeyP" || event.code === "KeyG") {
+          if (keyBinding(event.code) !== undefined || event.code === "KeyP" || event.code === "KeyG" || event.code === "Space") {
             event.preventDefault();
           }
           return;
@@ -667,7 +701,7 @@ export function createFlightInputManager(options: {
           return;
         }
         // A latching switch, handled like the pause key rather than through
-        // KEY_BINDINGS: it is not an axis, nothing smooths it, and it is not
+        // FIXED_KEY_BINDINGS: it is not an axis, nothing smooths it, and it is not
         // part of the control record the phone controller owns - so a remote
         // pilot holding the stick does not stop the gear being raised here.
         if (event.code === "KeyG") {
@@ -676,14 +710,20 @@ export function createFlightInputManager(options: {
           event.preventDefault();
           return;
         }
-        if (event.code in KEY_BINDINGS) {
+        if (event.code === "Space") {
+          if (event.repeat && !keysDown.has(event.code)) return;
+          event.preventDefault();
+          if (!remoteOwned) keysDown.add(event.code);
+          return;
+        }
+        if (keyBinding(event.code) !== undefined) {
           // Clearing held keys during adoption must also discard repeats from
           // that old keypress; a fresh press still takes over immediately.
           if (event.repeat && !keysDown.has(event.code)) return;
           if (!event.repeat) options.onLocalInput?.();
           event.preventDefault();
           if (remoteOwned) return;
-          if (!event.repeat && KEY_BINDINGS[event.code].flaps !== undefined) flapsInputRevision++;
+          if (!event.repeat && keyBinding(event.code)?.flaps !== undefined) flapsInputRevision++;
           keysDown.add(event.code);
         }
       };
@@ -691,6 +731,8 @@ export function createFlightInputManager(options: {
         keysDown.delete(event.code);
       };
       const onBlur = (): void => {
+        climbOverride = null;
+        if (climbMode) setClimbCommand(0);
         keysDown.clear();
       };
       // Focus moving to a slider or a button keeps the keys held: their keyups
@@ -721,6 +763,7 @@ export function createFlightInputManager(options: {
     poll(dt: number): ControlSurfaceState {
       const gamepad = readGamepad(selectedGamepadSlot);
       if (bindingCaptureActive) {
+        if (climbMode) setClimbCommand(0);
         captureGamepadBaseline(gamepad);
         return { ...smoothed };
       }
@@ -797,6 +840,7 @@ export function createFlightInputManager(options: {
         aileron,
         rudder,
         throttle: smoothToward(smoothed.throttle, persistent.throttle, dt),
+        ...(climbMode ? { climb: climbCommand } : {}),
         pitchTrim: persistent.pitchTrim,
         rollTrim: persistent.rollTrim,
         flaps: persistent.flaps,
@@ -810,12 +854,14 @@ export function createFlightInputManager(options: {
       applyFlightControls(sdk, controls, gearDown ? 1 : 0, options.rudderSign);
     },
     adoptControls(controls: ControlSurfaceState): void {
+      climbOverride = null;
+      setClimbCommand(0);
       leverBrake = 0;
       keysDown.clear();
       stickOverride = null;
       rudderOverride = null;
       throttleTarget = controls.throttle;
-      smoothed = { ...controls, elevator: 0, aileron: 0, rudder: 0, brake: 0 };
+      smoothed = { ...controls, elevator: 0, aileron: 0, rudder: 0, brake: 0, ...(climbMode ? { climb: 0 } : {}) };
       resetKeyboardAxes();
       resetGamepadBindingInputs();
       protectGamepad = true;
@@ -824,6 +870,8 @@ export function createFlightInputManager(options: {
     setRemoteOwned(value: boolean): void {
       if (remoteOwned === value) return;
       remoteOwned = value;
+      climbOverride = null;
+      if (climbMode) setClimbCommand(0);
       leverBrake = 0;
       smoothed.brake = 0;
       resetGamepadBindingInputs();
@@ -832,6 +880,7 @@ export function createFlightInputManager(options: {
     },
     hasActiveFlightInput(): boolean {
       if (bindingCaptureActive) return false;
+      if (climbMode && Math.abs(climbCommand) > takeoverDeadband()) return true;
       if (gamepadToolsActive) {
         return stickOverride !== null
           || rudderOverride !== null
@@ -865,6 +914,8 @@ export function createFlightInputManager(options: {
     getSliderBrake(): number { return leverBrake; },
     getFlapsInputRevision(): number { return flapsInputRevision; },
     resetControls(throttle: number): void {
+      climbOverride = null;
+      setClimbCommand(0);
       leverBrake = 0;
       keysDown.clear();
       stickOverride = null;
@@ -877,6 +928,8 @@ export function createFlightInputManager(options: {
     },
     setGamepadToolsActive(value: boolean): void {
       if (gamepadToolsActive === value) return;
+      climbOverride = null;
+      if (climbMode) setClimbCommand(0);
       leverBrake = 0;
       gamepadToolsActive = value;
       keysDown.clear();
@@ -916,6 +969,14 @@ export function createFlightInputManager(options: {
     },
     getSelectedGamepadSlot(): number {
       return selectedGamepadSlot;
+    },
+    getClimbRateCommand: () => climbCommand,
+    setClimbRateCommand(value: number): void {
+      const next = clamp(Number.isFinite(value) ? value : 0);
+      if (next !== 0) options.onLocalInput?.();
+      if (remoteOwned) return;
+      climbOverride = next === 0 ? null : next;
+      setClimbCommand(next);
     },
     setThrottle(value: number): void {
       options.onLocalInput?.();
@@ -1036,6 +1097,10 @@ export function createFlightInputManager(options: {
     },
     getGearDownNorm(): number {
       return gearDown ? 1 : 0;
+    },
+    getWeaponRelease(): number {
+      if (gamepadToolsActive) return gamepadBindingControls.weaponRelease;
+      return keysDown.has("Space") ? 1 : 0;
     },
     setGearDown,
   };

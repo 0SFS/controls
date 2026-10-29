@@ -8,6 +8,7 @@ import {
   type BindingSpec,
   type HostInputAdapter,
 } from "@felipegalind0/gamepad-tools/core";
+import { DEFAULT_KEYBOARD_AXES, withKeyboardAxes } from "./keyboardAxisBindings";
 import { controlsParameterDefaults } from "./settings";
 import type { FlightInputManager } from "./flightInputManager";
 
@@ -18,6 +19,7 @@ export const FLIGHT_GAMEPAD_ACTIONS: readonly ActionDescriptor[] = [
   { id: "flight.elevator", label: "Pitch", category: "Flight controls", kind: "axis", range: [-1, 1], contexts: ["flight"], available: true },
   { id: "flight.aileron", label: "Roll", category: "Flight controls", kind: "axis", range: [-1, 1], contexts: ["flight"], available: true },
   { id: "flight.rudder", label: "Rudder", category: "Flight controls", kind: "axis", range: [-1, 1], contexts: ["flight"], available: true },
+  { id: "flight.climbRate", label: "Climb / descent rate", category: "Flight controls", kind: "axis", range: [-1, 1], contexts: ["flight"], available: true },
   { id: "flight.throttle", label: "Absolute throttle", category: "Flight controls", kind: "value", range: [0, 1], contexts: ["flight"], available: true },
   { id: "flight.throttleRate", label: "Throttle increase / decrease", category: "Flight controls", kind: "rate", range: [-1, 1], contexts: ["flight"], available: true },
   { id: "flight.cameraYaw", label: "Camera left / right", category: "Camera", kind: "axis", range: [-1, 1], contexts: ["flight"], available: true },
@@ -27,6 +29,7 @@ export const FLIGHT_GAMEPAD_ACTIONS: readonly ActionDescriptor[] = [
   { id: "flight.flaps", label: "Absolute flaps", category: "Configuration", kind: "value", range: [0, 1], contexts: ["flight"], available: true },
   { id: "flight.flapsRate", label: "Flaps increase / decrease", category: "Configuration", kind: "rate", range: [-1, 1], contexts: ["flight"], available: true },
   { id: "flight.brake", label: "Brake", category: "Configuration", kind: "value", range: [0, 1], contexts: ["flight"], available: true },
+  { id: "flight.weaponRelease", label: "Weapon release", category: "Commands", kind: "value", range: [0, 1], contexts: ["flight"], available: true },
   { id: "flight.gearToggle", label: "Toggle landing gear", category: "Commands", kind: "command", contexts: ["flight"], available: true },
   { id: "flight.pause", label: "Pause simulation", category: "Commands", kind: "command", contexts: ["flight"], available: true },
   { id: "flight.view", label: "Toggle camera view", category: "Commands", kind: "command", contexts: ["flight"], available: true },
@@ -152,13 +155,9 @@ function paired(
 
 function keyboardDefaults(): BindingSpec[] {
   return [
-    paired("key-elevator", "flight.elevator", "axis", keySource("KeyW"), keySource("KeyS")),
-    paired("key-aileron", "flight.aileron", "axis", keySource("KeyD"), keySource("KeyA")),
-    paired("key-rudder", "flight.rudder", "axis", keySource("KeyE"), keySource("KeyQ")),
-    paired("key-throttle", "flight.throttleRate", "rate", keySource("ShiftLeft"), keySource("ControlLeft")),
-    paired("key-throttle-right", "flight.throttleRate", "rate", keySource("ShiftRight"), keySource("ControlRight")),
     paired("key-flaps", "flight.flapsRate", "rate", keySource("KeyF"), keySource("KeyR")),
     single("key-brake", "flight.brake", "value", keySource("KeyB"), [0, 1]),
+    single("key-weapon", "flight.weaponRelease", "value", keySource("Space"), [0, 1]),
     single("key-gear", "flight.gearToggle", "command", keySource("KeyG"), [0, 1]),
     single("key-pause", "flight.pause", "command", keySource("KeyP"), [0, 1]),
     single("key-view", "flight.view", "command", keySource("KeyV"), [0, 1]),
@@ -180,19 +179,20 @@ function profile(name: string, id: string, bindings: BindingSpec[]): BindingProf
  * replacing existing users' controller behavior.
  */
 export function createLegacyFlightProfile(slot = 0, stickDeadzone = DEFAULT_STICK_DEADZONE): BindingProfile {
-  return profile("Classic", "0sfs-legacy-compatible", [
+  return withKeyboardAxes(profile("Classic", "0sfs-legacy-compatible", [
     ...keyboardDefaults(),
     single("legacy-aileron", "flight.aileron", "axis", axisSource(slot, 0), [-1, 1], {}, stickDeadzone),
     single("legacy-elevator", "flight.elevator", "axis", axisSource(slot, 1), [-1, 1], { invert: true }, stickDeadzone),
     single("legacy-rudder", "flight.rudder", "axis", axisSource(slot, 2), [-1, 1], {}, stickDeadzone),
     single("legacy-throttle", "flight.throttle", "value", axisSource(slot, 3), [0, 1], { invert: true }, stickDeadzone),
     single("legacy-brake", "flight.brake", "value", buttonSource(slot, 0), [0, 1]),
-  ]);
+    single("legacy-weapon", "flight.weaponRelease", "value", buttonSource(slot, 5), [0, 1]),
+  ]), DEFAULT_KEYBOARD_AXES);
 }
 
 /** A deliberate standard-controller preset that avoids a resting-stick throttle. */
 export function createStandardFlightProfile(slot = 0, stickDeadzone = DEFAULT_STICK_DEADZONE): BindingProfile {
-  return profile("Xbox", "0sfs-standard-flight", [
+  return withKeyboardAxes(profile("Xbox", "0sfs-standard-flight", [
     ...keyboardDefaults(),
     single("standard-aileron", "flight.aileron", "axis", axisSource(slot, 0), [-1, 1], {}, stickDeadzone),
     single("standard-elevator", "flight.elevator", "axis", axisSource(slot, 1), [-1, 1], { invert: true }, stickDeadzone),
@@ -205,8 +205,9 @@ export function createStandardFlightProfile(slot = 0, stickDeadzone = DEFAULT_ST
     single("standard-camera-yaw", "flight.cameraYaw", "axis", axisSource(slot, 2), [-1, 1], { invert: true }, stickDeadzone),
     single("standard-camera-pitch", "flight.cameraPitch", "axis", axisSource(slot, 3), [-1, 1], { invert: true }, stickDeadzone),
     single("standard-brake", "flight.brake", "value", buttonSource(slot, 0), [0, 1]),
+    single("standard-weapon", "flight.weaponRelease", "value", buttonSource(slot, 5), [0, 1]),
     single("standard-gear", "flight.gearToggle", "command", buttonSource(slot, 2), [0, 1]),
     single("standard-pause", "flight.pause", "command", buttonSource(slot, 9), [0, 1]),
     single("standard-view", "flight.view", "command", buttonSource(slot, 8), [0, 1]),
-  ]);
+  ]), DEFAULT_KEYBOARD_AXES);
 }
