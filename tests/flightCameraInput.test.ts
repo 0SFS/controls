@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadInputSensitivityPreference, type HudInputMode } from "foss-earth/input";
 import { controlsParameterDefaults } from "../src/settings";
 import { attachFlightCameraInput, type FlightCameraInputOptions } from "../src/flightCameraInput";
-import { PINCH_RELEASE_GAP_MS } from "../src/cameraGlide";
+import { createCameraGlide, DEFAULT_GLIDE_DECAY, PINCH_RELEASE_GAP_MS } from "../src/cameraGlide";
 
 const getTouchWheelCooldownMs = () => controlsParameterDefaults().get("osfs.input.touchWheelCooldown");
 
@@ -82,6 +82,30 @@ describe("flight camera gestures", () => {
     expect(s.zoom).not.toHaveBeenCalled();
     s.wheel({ deltaY: -10, ctrlKey: true });
     expect(s.zoom.mock.calls[0][0]).toBeLessThan(1);
+  });
+  it("ends a trackpad swipe's orbit once its wheel stream has been quiet as long as a pinch's", () => {
+    vi.useFakeTimers();
+    try {
+      const s = setup("trackpad");
+      s.wheel({ deltaX: 10, deltaY: 20 });
+      expect(s.onOrbitActive).toHaveBeenLastCalledWith(true);
+      // The system's momentum after the lift keeps it going.
+      vi.advanceTimersByTime(PINCH_RELEASE_GAP_MS - 1);
+      s.wheel({ deltaY: 4 });
+      vi.advanceTimersByTime(PINCH_RELEASE_GAP_MS - 1);
+      expect(s.onOrbitActive).not.toHaveBeenCalledWith(false);
+      vi.advanceTimersByTime(1);
+      expect(s.onOrbitActive).toHaveBeenLastCalledWith(false);
+      // A pinch or a mouse wheel turns nothing, so it has nothing to end.
+      s.onOrbitActive.mockClear();
+      s.wheel({ deltaY: -10, ctrlKey: true });
+      s.setMode("mouse");
+      s.wheel({ deltaY: 100 });
+      vi.advanceTimersByTime(PINCH_RELEASE_GAP_MS * 2);
+      expect(s.onOrbitActive).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it.each([false, true])("uses Option/Alt for swipe zoom while held Control keeps orbiting (Safari: %s)", (safari) => {
     if (safari) {
@@ -239,10 +263,10 @@ describe("flight camera gestures", () => {
     s.touches("touchmove", [[20, 20], [40, 20]]);
     s.touches("touchend", [[20, 20]]);
     expect(s.orbit.mock.calls).toEqual([[0.05, 0.05], [0.05, 0.05]]);
-    expect(s.zoom.mock.calls).toEqual([[1]]);
+    expect(s.zoom).not.toHaveBeenCalled();
     s.touches("touchmove", [[30, 30]]);
     expect(s.orbit.mock.calls).toEqual([[0.05, 0.05], [0.05, 0.05], [0.05, 0.05]]);
-    expect(s.zoom.mock.calls).toEqual([[1]]);
+    expect(s.zoom).not.toHaveBeenCalled();
   });
 
   it("ignores foreign targets even when a canvas start batches their changed contacts", () => {
@@ -270,7 +294,7 @@ describe("flight camera gestures", () => {
     expect(s.orbit).toHaveBeenCalledTimes(1);
     s.touches("touchmove", [[30, 30], [50, 30]]);
     expect(s.orbit.mock.calls).toEqual([[0.05, 0.05], [0.05, 0.05]]);
-    expect(s.zoom.mock.calls).toEqual([[1], [1]]);
+    expect(s.zoom).not.toHaveBeenCalled();
   });
 
   it.each(["preventDefault", "stopPropagation"] as const)("leaves a consumed canvas touch with its click handler: %s", consume => {
@@ -380,7 +404,7 @@ describe("flight camera gestures", () => {
 });
 
 describe("flight camera glide hooks", () => {
-  const hooks = () => ({ arm: vi.fn(), release: vi.fn(), cancel: vi.fn() });
+  const hooks = () => ({ orbit: vi.fn(), arm: vi.fn(), release: vi.fn(), cancel: vi.fn(), hold: vi.fn() });
   const gesture = (canvas: HTMLCanvasElement, name: string, scale: number) => {
     const event = new Event(name, { cancelable: true });
     Object.assign(event, { scale });
@@ -400,6 +424,7 @@ describe("flight camera glide hooks", () => {
     expect(glide.arm.mock.calls).toEqual([["zoom", PINCH_RELEASE_GAP_MS]]);
     s.wheel({ deltaX: 10, deltaY: 20 });
     expect(s.orbit).toHaveBeenCalledTimes(1);
+    expect(glide.orbit).not.toHaveBeenCalled();
     expect(glide.arm).toHaveBeenCalledTimes(1);
     expect(glide.release).not.toHaveBeenCalled();
     expect(glide.cancel).not.toHaveBeenCalled();
@@ -422,22 +447,27 @@ describe("flight camera glide hooks", () => {
     expect(glide.release.mock.calls).toEqual([["zoom"]]);
   });
 
-  it("stops the glide when a finger lands on the canvas, and glides a pinch on when one of its fingers lifts", () => {
+  it("arms touch orbit and pinch until their fingers lift, preserving orbit when another finger joins", () => {
     const glide = hooks();
     const s = setup("touch", { glide });
     s.touches("touchstart", [[0, 0]]);
     expect(glide.cancel).toHaveBeenCalledTimes(1);
     s.touches("touchmove", [[10, 10]]);
-    expect(glide.arm).not.toHaveBeenCalled();
+    expect(glide.orbit.mock.calls).toEqual([[0.05, 0.05]]);
+    expect(s.orbit).not.toHaveBeenCalled();
+    expect(glide.arm.mock.calls).toEqual([["orbit", undefined]]);
     s.touches("touchstart", [[10, 10], [30, 10]]);
-    expect(glide.cancel).toHaveBeenCalledTimes(2);
+    expect(glide.cancel).toHaveBeenCalledTimes(1);
+    expect(glide.hold).toHaveBeenCalledTimes(1);
     s.touches("touchmove", [[5, 10], [35, 10]]);
     expect(s.zoom).toHaveBeenLastCalledWith(20 / 30);
-    expect(glide.arm.mock.calls).toEqual([["zoom", PINCH_RELEASE_GAP_MS]]);
+    expect(glide.arm.mock.calls).toEqual([["orbit", undefined], ["zoom", undefined]]);
     expect(glide.release).not.toHaveBeenCalled();
     s.touches("touchend", [[5, 10]]);
     expect(glide.release.mock.calls).toEqual([["zoom"]]);
-    expect(glide.cancel).toHaveBeenCalledTimes(2);
+    s.touches("touchend", []);
+    expect(glide.release.mock.calls).toEqual([["zoom"], ["zoom"], ["orbit"]]);
+    expect(glide.cancel).toHaveBeenCalledTimes(1);
   });
 
   it("leaves the glide alone for touches that are not the canvas's", () => {
@@ -459,5 +489,131 @@ describe("flight camera glide hooks", () => {
     const reserved = contact(3, s.canvas, 50, 50);
     dispatchTouch(s.canvas, "touchstart", [camera, reserved], [reserved]);
     expect(glide.cancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("canvas touch orbit inertia", () => {
+  const FRAME_MS = 1000 / 60;
+  function surface(decay = DEFAULT_GLIDE_DECAY) {
+    let now = 0;
+    const moved = { yaw: 0, pitch: 0, logZoom: 0 };
+    const glide = createCameraGlide({
+      decay: () => decay,
+      now: () => now,
+      orbit: (yaw, pitch) => { moved.yaw += yaw; moved.pitch += pitch; },
+      zoom: factor => { moved.logZoom += Math.log(factor); },
+    });
+    const s = setup("touch", { glide, zoom: factor => glide.zoom(factor) });
+    const advance = (frames = 1) => {
+      for (let frame = 0; frame < frames; frame++) { now += FRAME_MS; glide.step(now); }
+    };
+    return { ...s, glide, moved, advance };
+  }
+
+  it.each([1, 2])("carries a %i-finger orbit on after release and settles", fingers => {
+    const s = surface();
+    const contacts = (x: number) => fingers === 1 ? [[x, x]] : [[x, x], [x + 40, x]];
+    s.touches("touchstart", contacts(0));
+    for (let index = 1; index <= 8; index++) {
+      s.touches("touchmove", contacts(index * 10));
+      s.advance();
+    }
+    expect(s.orbit).not.toHaveBeenCalled();
+    expect(s.moved.yaw).toBeGreaterThan(0);
+    expect(s.moved.yaw).toBeLessThan(0.4);
+    const atLift = s.moved.yaw;
+    s.touches("touchend", []);
+    s.advance(180);
+    expect(s.moved.yaw).toBeGreaterThan(0.4 + 0.01);
+    expect(s.moved.yaw).toBeGreaterThan(atLift);
+    expect(s.moved.pitch).toBeCloseTo(s.moved.yaw, 12);
+    expect(s.glide.isActive()).toBe(false);
+  });
+
+  it("does not fling an orbit after the finger rests before lifting", () => {
+    const s = surface();
+    s.touches("touchstart", [[0, 0]]);
+    for (let index = 1; index <= 8; index++) {
+      s.touches("touchmove", [[index * 10, 0]]);
+      s.advance();
+    }
+    s.advance(30);
+    s.touches("touchend", []);
+    s.advance(180);
+    expect(s.moved.yaw).toBeCloseTo(0.4, 12);
+    expect(s.glide.isActive()).toBe(false);
+  });
+
+  it("stops a released orbit when a new finger lands", () => {
+    const s = surface();
+    s.touches("touchstart", [[0, 0]]);
+    for (let index = 1; index <= 8; index++) {
+      s.touches("touchmove", [[index * 10, 0]]);
+      s.advance();
+    }
+    s.touches("touchend", []);
+    s.advance(5);
+    const before = s.moved.yaw;
+    s.touches("touchstart", [[100, 0]]);
+    s.advance(180);
+    expect(s.moved.yaw).toBe(before);
+    expect(s.glide.isActive()).toBe(false);
+  });
+
+  it("releases only zoom while the finger left still holds the orbit", () => {
+    const s = surface();
+    s.touches("touchstart", [[0, 0], [40, 0]]);
+    for (let index = 1; index <= 6; index++) {
+      s.touches("touchmove", [[index * 10, 0], [40 + index * 12, 0]]);
+      s.advance();
+    }
+    s.touches("touchend", [[60, 0]]);
+    s.advance(180);
+    expect(s.moved.yaw).toBeCloseTo(66 * 0.005, 12);
+    expect(s.moved.logZoom).toBeLessThan(Math.log(40 / 52) - 0.01);
+    for (let index = 1; index <= 6; index++) {
+      s.touches("touchmove", [[60 + index * 10, 0]]);
+      s.advance();
+    }
+    s.touches("touchend", []);
+    s.advance(180);
+    expect(s.moved.yaw).toBeGreaterThan(126 * 0.005 + 0.01);
+  });
+
+  it.each(["blur", "dispose"])("clears active gestures and glide on %s", action => {
+    const s = surface();
+    s.touches("touchstart", [[0, 0]]);
+    s.touches("touchmove", [[30, 20]]);
+    s.advance();
+    expect(s.glide.isActive()).toBe(true);
+    if (action === "blur") window.dispatchEvent(new Event("blur"));
+    else s.dispose();
+    const before = { ...s.moved };
+    s.touches("touchmove", [[60, 40]]);
+    s.touches("touchend", []);
+    s.advance(180);
+    expect(s.moved).toEqual(before);
+    expect(s.glide.isActive()).toBe(false);
+    if (action === "blur") {
+      s.touches("touchstart", [[0, 0]]);
+      s.touches("touchmove", [[10, 0]]);
+      s.advance();
+      expect(s.moved.yaw).toBeGreaterThan(before.yaw);
+    }
+  });
+
+  it("retains release inertia on touchcancel and honors disabled glide", () => {
+    for (const decay of [DEFAULT_GLIDE_DECAY, 0]) {
+      const s = surface(decay);
+      s.touches("touchstart", [[0, 0]]);
+      for (let index = 1; index <= 8; index++) {
+        s.touches("touchmove", [[index * 10, 0]]);
+        s.advance();
+      }
+      s.touches("touchcancel", []);
+      s.advance(180);
+      if (decay > 0) expect(s.moved.yaw).toBeGreaterThan(0.4 + 0.01);
+      else expect(s.moved.yaw).toBeCloseTo(0.4, 12);
+    }
   });
 });

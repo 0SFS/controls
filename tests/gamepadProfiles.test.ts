@@ -9,6 +9,7 @@ import {
   createFlightGamepadAdapter,
   createLegacyFlightProfile,
   createStandardFlightProfile,
+  withWeaponNextDefaults,
 } from "../src/gamepadToolsAdapter";
 
 const cleanups: (() => void)[] = [];
@@ -47,10 +48,11 @@ function harness(
 ) {
   input.getGamepadResponseController().setSettings({ ...DEFAULT_GAMEPAD_RESPONSE_SETTINGS, mode });
   const onCameraOrbit = vi.fn();
+  const onWeaponNext = vi.fn();
   const source = createBrowserInputSource({ target: window });
   const runtime = new BindingRuntime({
     profile: factory(), defaultAxisDeadzone: 0.08,
-    adapter: createFlightGamepadAdapter(input, { onCameraOrbit }),
+    adapter: createFlightGamepadAdapter(input, { onCameraOrbit, onWeaponNext }),
   });
   input.setGamepadToolsActive(true);
   const detach = source.subscribe((frame) => runtime.dispatch(frame));
@@ -59,10 +61,116 @@ function harness(
     source.tick();
     return input.poll(dt);
   };
-  return { input, source, runtime, step, onCameraOrbit };
+  return { input, source, runtime, step, onCameraOrbit, onWeaponNext };
 }
 
 describe("flight profiles through browser sampling and evaluation", () => {
+  it("fills older Xbox next-weapon bindings in memory without changing saved bindings", () => {
+    const current = createStandardFlightProfile(2);
+    const older = { ...current, bindings: current.bindings.filter(binding => binding.actionId !== "flight.weaponNext") };
+    const before = structuredClone(older);
+    const filled = withWeaponNextDefaults(older);
+    expect(older).toEqual(before);
+    expect(filled.bindings.slice(0, older.bindings.length)).toEqual(older.bindings);
+    expect(filled.bindings.filter(binding => binding.actionId === "flight.weaponNext")).toMatchObject([
+      { source: { selector: { kind: "keyboard", code: "KeyY" } } },
+      { source: { selector: { kind: "gamepad-button", gamepadSlot: 2, buttonIndex: 4 } } },
+    ]);
+    expect(withWeaponNextDefaults(filled)).toEqual(filled);
+  });
+
+  it("does not claim Y or left bumper from existing single or paired bindings", () => {
+    const current = createStandardFlightProfile();
+    const older = { ...current, bindings: current.bindings.filter(binding => binding.actionId !== "flight.weaponNext").map(binding => {
+      if (binding.id === "key-view" && binding.kind === "single") {
+        return { ...binding, source: { selector: { kind: "keyboard" as const, code: "KeyY" } } };
+      }
+      if (binding.id === "standard-throttle" && binding.kind === "paired") {
+        return { ...binding, negativeSource: { selector: { kind: "gamepad-button" as const, gamepadSlot: 0, buttonIndex: 4 } } };
+      }
+      return binding;
+    }) };
+    expect(withWeaponNextDefaults(older).bindings).toEqual(older.bindings);
+  });
+
+  it("preserves an explicitly disabled next command and gives old Classic profiles keyboard only", () => {
+    const profile = createStandardFlightProfile();
+    const disabled = { ...profile, bindings: profile.bindings.map(binding => binding.actionId === "flight.weaponNext"
+      ? { ...binding, enabled: false } : binding) };
+    expect(withWeaponNextDefaults(disabled)).toEqual(disabled);
+    const classic = createLegacyFlightProfile();
+    const older = { ...classic, bindings: classic.bindings.filter(binding => binding.actionId !== "flight.weaponNext") };
+    expect(withWeaponNextDefaults(older).bindings.filter(binding => binding.actionId === "flight.weaponNext")).toHaveLength(1);
+  });
+
+  it("switches weapons once per left-bumper press, leaving right-bumper fire independent", () => {
+    const { input, step, onWeaponNext } = harness();
+    step();
+    button(4, 1);
+    step();
+    step();
+    expect(onWeaponNext).toHaveBeenCalledTimes(1);
+    expect(input.getWeaponRelease()).toBe(0);
+    button(5, 1);
+    step();
+    expect(input.getWeaponRelease()).toBe(1);
+    expect(onWeaponNext).toHaveBeenCalledTimes(1);
+    button(4, 0);
+    step();
+    button(4, 1);
+    step();
+    expect(onWeaponNext).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([createStandardFlightProfile, createLegacyFlightProfile])(
+    "switches weapons with keyboard Y without changing throttle",
+    (factory) => {
+      const { step, onWeaponNext } = harness(factory);
+      step();
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyY", key: "y" }));
+      expect(step().throttle).toBe(0.5);
+      step();
+      expect(onWeaponNext).toHaveBeenCalledTimes(1);
+      window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyY", key: "y" }));
+      step();
+    },
+  );
+
+  it("honors a saved next-weapon remapping without restoring preset sources", () => {
+    const factory = () => {
+      const profile = createStandardFlightProfile();
+      const binding = profile.bindings.find(entry => entry.id === "key-weapon-next")!;
+      return { ...profile, bindings: [
+        ...profile.bindings.filter(entry => entry.actionId !== "flight.weaponNext"),
+        { ...binding, source: { selector: { kind: "keyboard" as const, code: "KeyU" } } },
+      ] };
+    };
+    const { runtime, step, onWeaponNext } = harness(factory);
+    const saved = structuredClone(runtime.getProfile());
+    step();
+    button(4, 1);
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyY", key: "y" }));
+    step();
+    expect(onWeaponNext).not.toHaveBeenCalled();
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyU", key: "u" }));
+    step();
+    expect(onWeaponNext).toHaveBeenCalledTimes(1);
+    expect(runtime.getProfile()).toEqual(saved);
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyY", key: "y" }));
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyU", key: "u" }));
+  });
+
+  it("keeps weapon switching out of binding capture", () => {
+    const { runtime, step, onWeaponNext } = harness();
+    step();
+    runtime.setBindingCapture(true);
+    button(4, 1);
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyY", key: "y" }));
+    step();
+    expect(onWeaponNext).not.toHaveBeenCalled();
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyY", key: "y" }));
+  });
+
   it("requires fresh absolute flap-lever movement after automatic actuator feedback", () => {
     const factory = () => {
       const profile = createStandardFlightProfile();

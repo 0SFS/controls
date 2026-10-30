@@ -67,6 +67,10 @@
       "source": "./src/keyboardAxisBindings.ts",
       "default": "./src/keyboardAxisBindings.ts"
     },
+    "./centeredStick": {
+      "source": "./src/centeredStick.ts",
+      "default": "./src/centeredStick.ts"
+    },
     "./climbRateLever": {
       "source": "./src/climbRateLever.ts",
       "default": "./src/climbRateLever.ts"

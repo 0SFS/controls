@@ -30,6 +30,7 @@ export const FLIGHT_GAMEPAD_ACTIONS: readonly ActionDescriptor[] = [
   { id: "flight.flapsRate", label: "Flaps increase / decrease", category: "Configuration", kind: "rate", range: [-1, 1], contexts: ["flight"], available: true },
   { id: "flight.brake", label: "Brake", category: "Configuration", kind: "value", range: [0, 1], contexts: ["flight"], available: true },
   { id: "flight.weaponRelease", label: "Weapon release", category: "Commands", kind: "value", range: [0, 1], contexts: ["flight"], available: true },
+  { id: "flight.weaponNext", label: "Next weapon", category: "Commands", kind: "command", contexts: ["flight"], available: true },
   { id: "flight.gearToggle", label: "Toggle landing gear", category: "Commands", kind: "command", contexts: ["flight"], available: true },
   { id: "flight.pause", label: "Pause simulation", category: "Commands", kind: "command", contexts: ["flight"], available: true },
   { id: "flight.view", label: "Toggle camera view", category: "Commands", kind: "command", contexts: ["flight"], available: true },
@@ -37,6 +38,7 @@ export const FLIGHT_GAMEPAD_ACTIONS: readonly ActionDescriptor[] = [
 
 export interface FlightGamepadAdapterOptions {
   onViewToggle?(): void;
+  onWeaponNext?(): void;
   onCameraOrbit?(yaw: number, pitch: number, dt: number): void;
   onCameraOrbitActive?(active: boolean): void;
 }
@@ -51,6 +53,8 @@ export function createFlightGamepadAdapter(
     getContext: () => "flight",
     applyIntents(frame: ActionIntentFrame): void {
       const viewPressed = frame.intents.some((intent) => intent.actionId === "flight.view"
+        && intent.kind === "command" && intent.edge === "press");
+      const weaponNextPressed = frame.intents.some((intent) => intent.actionId === "flight.weaponNext"
         && intent.kind === "command" && intent.edge === "press");
     const cameraOrbit = frame.intents.reduce(
       (value, intent) => {
@@ -67,12 +71,16 @@ export function createFlightGamepadAdapter(
       ...frame,
       intents: frame.intents.filter((intent) => (
         intent.actionId !== "flight.view"
+        && intent.actionId !== "flight.weaponNext"
         && intent.actionId !== "flight.cameraYaw"
           && intent.actionId !== "flight.cameraPitch"
         )),
       });
     if (viewPressed && !input.isBindingCaptureActive()) {
       options.onViewToggle?.();
+    }
+    if (weaponNextPressed && !input.isBindingCaptureActive()) {
+      options.onWeaponNext?.();
     }
     const cameraYaw = cameraOrbit.yaw;
     const cameraPitch = cameraOrbit.pitch;
@@ -158,10 +166,42 @@ function keyboardDefaults(): BindingSpec[] {
     paired("key-flaps", "flight.flapsRate", "rate", keySource("KeyF"), keySource("KeyR")),
     single("key-brake", "flight.brake", "value", keySource("KeyB"), [0, 1]),
     single("key-weapon", "flight.weaponRelease", "value", keySource("Space"), [0, 1]),
+    single("key-weapon-next", "flight.weaponNext", "command", keySource("KeyY"), [0, 1]),
     single("key-gear", "flight.gearToggle", "command", keySource("KeyG"), [0, 1]),
     single("key-pause", "flight.pause", "command", keySource("KeyP"), [0, 1]),
     single("key-view", "flight.view", "command", keySource("KeyV"), [0, 1]),
   ];
+}
+
+/** Fill an older profile's new command in memory, without replacing any saved choice. */
+export function withWeaponNextDefaults(profile: BindingProfile): BindingProfile {
+  const bindings = [...profile.bindings];
+  // A disabled or remapped command is still an explicit user choice.
+  if (bindings.some(binding => binding.actionId === "flight.weaponNext")) return { ...profile, bindings };
+  const sources = bindings.flatMap(binding => binding.kind === "single"
+    ? [binding.source] : [binding.positiveSource, binding.negativeSource]);
+  const unusedId = (base: string): string => {
+    let id = base;
+    for (let suffix = 2; bindings.some(binding => binding.id === id); suffix++) id = `${base}-${suffix}`;
+    return id;
+  };
+  if (!sources.some(source => source.selector.kind === "keyboard" && source.selector.code === "KeyY")) {
+    bindings.push(single(unusedId("key-weapon-next"), "flight.weaponNext", "command", keySource("KeyY"), [0, 1]));
+  }
+  // Recognize Xbox-derived profiles through their retained preset bindings;
+  // never assume a custom joystick has the standard controller's left bumper.
+  const standardSources = profile.bindings.filter(binding => binding.id.startsWith("standard-"))
+    .flatMap(binding => binding.kind === "single" ? [binding.source] : [binding.positiveSource, binding.negativeSource]);
+  const selector = standardSources.find(source => source.selector.kind !== "keyboard")?.selector;
+  if (selector && selector.kind !== "keyboard" && !sources.some(source => source.selector.kind === "gamepad-button"
+    && source.selector.gamepadSlot === selector.gamepadSlot && source.selector.buttonIndex === 4)) {
+    const source = buttonSource(selector.gamepadSlot, 4);
+    if (source.selector.kind === "gamepad-button" && selector.gamepadSessionId !== undefined) {
+      source.selector.gamepadSessionId = selector.gamepadSessionId;
+    }
+    bindings.push(single(unusedId("standard-weapon-next"), "flight.weaponNext", "command", source, [0, 1]));
+  }
+  return { ...profile, bindings };
 }
 
 function profile(name: string, id: string, bindings: BindingSpec[]): BindingProfile {
@@ -206,6 +246,7 @@ export function createStandardFlightProfile(slot = 0, stickDeadzone = DEFAULT_ST
     single("standard-camera-pitch", "flight.cameraPitch", "axis", axisSource(slot, 3), [-1, 1], { invert: true }, stickDeadzone),
     single("standard-brake", "flight.brake", "value", buttonSource(slot, 0), [0, 1]),
     single("standard-weapon", "flight.weaponRelease", "value", buttonSource(slot, 5), [0, 1]),
+    single("standard-weapon-next", "flight.weaponNext", "command", buttonSource(slot, 4), [0, 1]),
     single("standard-gear", "flight.gearToggle", "command", buttonSource(slot, 2), [0, 1]),
     single("standard-pause", "flight.pause", "command", buttonSource(slot, 9), [0, 1]),
     single("standard-view", "flight.view", "command", buttonSource(slot, 8), [0, 1]),

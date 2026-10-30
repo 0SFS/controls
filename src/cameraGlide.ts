@@ -268,7 +268,7 @@ export interface TouchSurfaceFrame {
  * been quiet for `PINCH_RELEASE_GAP_MS`, and one that stops counting with a
  * finger down (another pilot took over) ends it as a lift would.
  */
-export function createTouchSurfaceGlide(glide: CameraGlide): { frame(frame: TouchSurfaceFrame): void } {
+export function createTouchSurfaceGlide(glide: Pick<CameraGlide, "orbit" | "zoom" | "arm" | "release" | "cancel" | "hold">): { frame(frame: TouchSurfaceFrame): void } {
   let before: number | null = null;
   return {
     frame({ fingers, yaw, pitch, zoom }) {

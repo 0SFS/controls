@@ -16,14 +16,22 @@ with two fingers to zoom. An ordinary swipe turns the view, including while
 | Mac trackpad | One gesture, already classified by macOS | A swipe turns the view or a pinch zooms it, never both |
 
 The glide that carries a gesture on after the fingers lift is
-`src/cameraGlide.ts`. A touch surface that counts its fingers drives it through
-`createTouchSurfaceGlide`:
+`src/cameraGlide.ts`. Both the flight canvas and the phone camera pad count their
+own fingers and drive it through `createTouchSurfaceGlide`:
 
 - The first finger landing stops the glide.
 - A finger joining one already down stops only a glide left from an earlier
   lift, so a swipe carries on into a pinch without a hitch.
 - Lifting one of two fingers lets the zoom glide on while the finger left goes
   on turning the view. Lifting the last lets the turn glide on.
+
+Touch orbit and zoom use the Camera → Glide setting. A finger that rests before
+lifting does not fling the view. Window blur or detaching the canvas controls
+clears its gesture and glide. Mouse drag and trackpad swipe orbit keep their
+direct response; a trackpad's system momentum supplies its orbit inertia. No
+event ends a swipe, so its orbit ends once the wheel stream, momentum included,
+has been quiet for `PINCH_RELEASE_GAP_MS`, as a drag's ends on release. What
+waits for the pilot to let the view go, such as Spring back, waits for that.
 
 ## Why a Mac trackpad turns or zooms
 
