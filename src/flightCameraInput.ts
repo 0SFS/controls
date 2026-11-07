@@ -22,11 +22,20 @@ export interface FlightCameraInputOptions {
    * Finger counts release each gesture and stop an earlier glide on landing.
    * A trackpad pinch that no event ends is released once it has been quiet
    * for `PINCH_RELEASE_GAP_MS`. Mouse and trackpad orbit stays direct.
+   *
+   * Required, so that no host forgets it: a camera a person steers glides
+   * (FOSS Earth's docs/camera-motion.md). Null, no glide, is for tests of the
+   * gestures alone. A host with one camera uses `attachChaseCameraInput`,
+   * which makes the glide and gives it the zoom.
    */
-  glide?: Pick<CameraGlide, "orbit" | "arm" | "release" | "cancel" | "hold">;
+  glide: Pick<CameraGlide, "orbit" | "arm" | "release" | "cancel" | "hold"> | null;
 }
 
-/** Canvas gestures only; keyboard/gamepad physics input remains independent. */
+/**
+ * Canvas gestures only; keyboard/gamepad physics input remains independent.
+ * Hosts use `attachChaseCameraInput` (chaseCameraInput.ts) unless, as /fly,
+ * they drive more than one glide.
+ */
 export function attachFlightCameraInput(canvas: HTMLCanvasElement, options: FlightCameraInputOptions): () => void {
   const owner = canvas.ownerDocument.defaultView!;
   const safari = isSafariGestureSupported();

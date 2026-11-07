@@ -16,7 +16,8 @@ with two fingers to zoom. An ordinary swipe turns the view, including while
 | Mac trackpad | One gesture, already classified by macOS | A swipe turns the view or a pinch zooms it, never both |
 
 The glide that carries a gesture on after the fingers lift is
-`src/cameraGlide.ts`. Both the flight canvas and the phone camera pad count their
+`src/cameraGlide.ts`. A page with one chase camera, such as /replay/, gets it
+with the gestures from `attachChaseCameraInput` (`src/chaseCameraInput.ts`). Both the flight canvas and the phone camera pad count their
 own fingers and drive it through `createTouchSurfaceGlide`:
 
 - The first finger landing stops the glide.

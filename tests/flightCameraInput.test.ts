@@ -39,7 +39,7 @@ function setup(initial: HudInputMode = "mouse", options: Partial<FlightCameraInp
   const orbit = vi.fn();
   const zoom = vi.fn();
   const onOrbitActive = vi.fn();
-  const dispose = attachFlightCameraInput(canvas, { getMode: () => mode, getSensitivity: loadInputSensitivityPreference, orbit, zoom, onOrbitActive, getTouchWheelCooldownMs, ...options });
+  const dispose = attachFlightCameraInput(canvas, { getMode: () => mode, getSensitivity: loadInputSensitivityPreference, orbit, zoom, onOrbitActive, getTouchWheelCooldownMs, glide: null, ...options });
   disposers.push(dispose);
   const pointer = (target: EventTarget, name: string, button: number, x = 0, y = 0, buttons = button === 2 ? 2 : 1) => {
     const event = new MouseEvent(name, { button, buttons, clientX: x, clientY: y, cancelable: true });
@@ -187,7 +187,7 @@ describe("flight camera gestures", () => {
       trackpad: { pan: 1, orbit: 1, zoom: 1 },
       touch: { pan: 1, orbit: 2, zoom: 3 },
     };
-    disposers.push(attachFlightCameraInput(canvas, { getMode: () => "mouse", getSensitivity: () => sensitivity, orbit, zoom, getTouchWheelCooldownMs }));
+    disposers.push(attachFlightCameraInput(canvas, { getMode: () => "mouse", getSensitivity: () => sensitivity, orbit, zoom, getTouchWheelCooldownMs, glide: null }));
     const touches = touchSequence(canvas);
 
     touches("touchstart", [[0, 0], [10, 0]]);
@@ -375,6 +375,7 @@ describe("flight camera gestures", () => {
       orbit,
       zoom: vi.fn(),
       getTouchWheelCooldownMs,
+      glide: null,
     });
     disposers.push(dispose);
     const pointer = (target: EventTarget, name: string, button: number, x = 0, y = 0, buttons = button === 2 ? 2 : 1) => {

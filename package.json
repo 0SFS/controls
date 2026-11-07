@@ -22,6 +22,10 @@
       "source": "./src/cameraGlide.ts",
       "default": "./src/cameraGlide.ts"
     },
+    "./chaseCameraInput": {
+      "source": "./src/chaseCameraInput.ts",
+      "default": "./src/chaseCameraInput.ts"
+    },
     "./flightCameraInput": {
       "source": "./src/flightCameraInput.ts",
       "default": "./src/flightCameraInput.ts"

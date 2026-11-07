@@ -6,6 +6,8 @@ The fly app depends on this package and runs its tests. From the `fly` directory
 
 [Camera gestures](docs/camera-gestures.md) covers what touchscreens, the phone's camera pad and a Mac trackpad give the flight camera.
 
+A page with a chase camera steers it with `attachChaseCameraInput` (`src/chaseCameraInput.ts`). It glides every gesture as FOSS Earth's camera does, with Controls → Camera → Glide, and the host steps it once a frame. `attachFlightCameraInput` will not compile without a glide.
+
 ## Community
 
 - [Code of conduct](https://github.com/0SFS/.github/blob/main/CODE_OF_CONDUCT.md)
