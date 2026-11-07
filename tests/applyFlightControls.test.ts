@@ -87,4 +87,97 @@ describe("applyFlightControls", () => {
     }
     expect(setPropertyValue).not.toHaveBeenCalled();
   });
+
+  /** An SDK with batches: every single set and every batch write, in order, and each batch made. */
+  function batchedSdk() {
+    const log: unknown[][] = [];
+    const batches: { paths: readonly string[]; options: unknown; disposed: boolean; write: (values: ArrayLike<number>) => void; dispose: () => void }[] = [];
+    const sdk = {
+      setPropertyValue: vi.fn((path: string, value: number) => { log.push(["set", path, value]); }),
+      createPropertyBatch: vi.fn((paths: readonly string[], options?: unknown) => {
+        const batch = {
+          paths, options, disposed: false,
+          write(values: ArrayLike<number>) {
+            if (batch.disposed) throw new Error("PropertyBatch has been disposed.");
+            log.push(["write", ...paths.map((path, index) => [path, values[index]])]);
+          },
+          dispose() { batch.disposed = true; },
+        };
+        batches.push(batch);
+        return batch;
+      }),
+    };
+    return { sdk: sdk as unknown as JSBSimSdk, log, batches, createPropertyBatch: sdk.createPropertyBatch };
+  }
+  const flying = { elevator: -0.32, aileron: 0.45, rudder: 0.6, throttle: 0.83, pitchTrim: -0.16, rollTrim: 0.22, flaps: 0.33, brake: 0.8 };
+
+  it("writes the eleven commands with one batch, in the order they were set one at a time, between the conditional sets", () => {
+    const { sdk, log, createPropertyBatch } = batchedSdk();
+    applyFlightControls(sdk, flying, 0, -1, { commandProperty: "fcs/stovl-cmd-norm", commandNorm: 0.5 },
+      { commandProperty: "fcs/control-law-mode", mode: "manual" }, { commandProperty: "fcs/auto-flaps", enabled: true },
+      { property: "fcs/full-stick-roll-rate-deg_sec", degPerSec: 30 }, 0.5);
+    expect(log).toEqual([
+      ["set", "fcs/control-law-mode", 1],
+      ["set", "fcs/auto-flaps", 1],
+      ["set", "fcs/full-stick-roll-rate-deg_sec", 30],
+      ["write",
+        ["fcs/elevator-cmd-norm", -0.32],
+        ["fcs/aileron-cmd-norm", 0.45],
+        ["fcs/rudder-cmd-norm", -0.6],
+        ["fcs/throttle-cmd-norm", 0.83],
+        ["fcs/pitch-trim-cmd-norm", -0.16],
+        ["fcs/roll-trim-cmd-norm", 0.11],
+        ["fcs/flap-cmd-norm", 0.33],
+        ["fcs/brake-cmd-norm", 0.8],
+        ["fcs/left-brake-cmd-norm", 0.8],
+        ["fcs/right-brake-cmd-norm", 0.8],
+        ["gear/gear-cmd-norm", 0]],
+      ["set", "fcs/stovl-cmd-norm", 0.5],
+    ]);
+    // A single set creates a property the model lacks; the batch must too.
+    expect(createPropertyBatch).toHaveBeenCalledTimes(1);
+    expect(createPropertyBatch.mock.calls[0]![1]).toEqual({ create: true });
+    log.length = 0;
+    applyFlightControls(sdk, { ...flying, elevator: 0.1 });
+    expect(createPropertyBatch).toHaveBeenCalledTimes(1);
+    expect(log).toHaveLength(1);
+    expect(log[0]![1]).toEqual(["fcs/elevator-cmd-norm", 0.1]);
+  });
+
+  it("keeps one batch per SDK", () => {
+    const first = batchedSdk(), second = batchedSdk();
+    applyFlightControls(first.sdk, flying);
+    applyFlightControls(second.sdk, { ...flying, throttle: 0.2 });
+    applyFlightControls(first.sdk, flying);
+    expect(first.createPropertyBatch).toHaveBeenCalledTimes(1);
+    expect(second.createPropertyBatch).toHaveBeenCalledTimes(1);
+    expect(second.log[0]![4]).toEqual(["fcs/throttle-cmd-norm", 0.2]);
+    expect(first.log).toHaveLength(2);
+  });
+
+  it("resolves the paths again once a model load has disposed the batch, and writes the commands once", () => {
+    const { sdk, log, batches, createPropertyBatch } = batchedSdk();
+    applyFlightControls(sdk, flying);
+    batches[0]!.disposed = true;
+    log.length = 0;
+    applyFlightControls(sdk, { ...flying, aileron: -0.7 });
+    expect(createPropertyBatch).toHaveBeenCalledTimes(2);
+    expect(log).toHaveLength(1);
+    expect(log[0]![2]).toEqual(["fcs/aileron-cmd-norm", -0.7]);
+    applyFlightControls(sdk, flying);
+    expect(createPropertyBatch).toHaveBeenCalledTimes(2);
+    expect(batches[1]!.disposed).toBe(false);
+  });
+
+  it("sets each command on its own, in the same order, on an SDK that cannot make a batch", () => {
+    const { sdk, log, createPropertyBatch } = batchedSdk();
+    createPropertyBatch.mockImplementation(() => { throw new Error("This JSBSim wasm build does not include PropertyBatch bindings."); });
+    applyFlightControls(sdk, flying, 0);
+    applyFlightControls(sdk, flying, 1);
+    expect(createPropertyBatch).toHaveBeenCalledTimes(1);
+    expect(log.slice(0, 11).map(entry => entry[1])).toEqual(["fcs/elevator-cmd-norm", "fcs/aileron-cmd-norm", "fcs/rudder-cmd-norm",
+      "fcs/throttle-cmd-norm", "fcs/pitch-trim-cmd-norm", "fcs/roll-trim-cmd-norm", "fcs/flap-cmd-norm", "fcs/brake-cmd-norm",
+      "fcs/left-brake-cmd-norm", "fcs/right-brake-cmd-norm", "gear/gear-cmd-norm"]);
+    expect(log.slice(11).map(entry => entry[2])).toEqual([-0.32, 0.45, -0.6, 0.83, -0.16, 0.22, 0.33, 0.8, 0.8, 0.8, 1]);
+  });
 });

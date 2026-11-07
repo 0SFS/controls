@@ -1,10 +1,51 @@
-import type { JSBSimSdk } from "@felipegalind0/jsbsim";
+import type { JSBSimSdk, PropertyBatch } from "@felipegalind0/jsbsim";
 import type { ControlSurfaceState } from "./flightInputManager";
 
 export type FlightControlLawMode = "auto" | "manual" | "fly-by-wire";
 export const CONTROL_LAW_MODE_VALUES: Readonly<Record<FlightControlLawMode, number>> = {
   auto: 0, manual: 1, "fly-by-wire": 2,
 };
+
+/**
+ * The commands written every step, in the order they were once written one
+ * at a time: JSBSim runs a tied property's setter as the value is written, and
+ * a batch writes its slots in order, so the order stays.
+ */
+const COMMAND_PATHS = [
+  "fcs/elevator-cmd-norm", "fcs/aileron-cmd-norm", "fcs/rudder-cmd-norm", "fcs/throttle-cmd-norm",
+  "fcs/pitch-trim-cmd-norm", "fcs/roll-trim-cmd-norm", "fcs/flap-cmd-norm", "fcs/brake-cmd-norm",
+  "fcs/left-brake-cmd-norm", "fcs/right-brake-cmd-norm", "gear/gear-cmd-norm",
+] as const;
+const commandValues = new Float64Array(COMMAND_PATHS.length);
+/** Per SDK: the batch, or null where batches are not available and each command is set on its own. */
+const commandBatches = new WeakMap<object, PropertyBatch | null>();
+
+function commandBatch(sdk: JSBSimSdk): PropertyBatch | null {
+  let batch: PropertyBatch | null = null;
+  if (typeof sdk.createPropertyBatch === "function") {
+    // `create`, as a single set does: a model without one of these properties gets it, as it did.
+    try { batch = sdk.createPropertyBatch(COMMAND_PATHS, { create: true }); }
+    catch { /* A build without batches: each command is set on its own. */ }
+  }
+  commandBatches.set(sdk, batch);
+  return batch;
+}
+
+function writeCommands(sdk: JSBSimSdk, values: Float64Array): void {
+  let batch = commandBatches.has(sdk) ? commandBatches.get(sdk)! : commandBatch(sdk);
+  if (batch) {
+    try {
+      batch.write(values);
+      return;
+    } catch {
+      // Loading a model disposes the SDK's batches, and a disposed batch writes nothing: resolve the paths again.
+    }
+    batch.dispose();
+    batch = commandBatch(sdk);
+  }
+  if (batch) { batch.write(values); return; }
+  for (let i = 0; i < COMMAND_PATHS.length; i++) sdk.setPropertyValue(COMMAND_PATHS[i]!, values[i]!);
+}
 
 /**
  * The sole normalized control-to-physics boundary, shared by every input owner.
@@ -42,21 +83,24 @@ export function applyFlightControls(
   if (controlLaw) sdk.setPropertyValue(controlLaw.commandProperty, CONTROL_LAW_MODE_VALUES[controlLaw.mode]);
   if (automaticFlaps) sdk.setPropertyValue(automaticFlaps.commandProperty, Number(automaticFlaps.enabled));
   if (fullStickRollRate) sdk.setPropertyValue(fullStickRollRate.property, fullStickRollRate.degPerSec);
-  sdk.setPropertyValue("fcs/elevator-cmd-norm", controls.elevator);
-  sdk.setPropertyValue("fcs/aileron-cmd-norm", controls.aileron);
+  // In COMMAND_PATHS order, written with one batch.
+  const values = commandValues;
+  values[0] = controls.elevator;
+  values[1] = controls.aileron;
   // Controls use positive yaw-right. Each FDM profile declares whether its
   // native yaw-surface convention needs conversion at this boundary.
-  sdk.setPropertyValue("fcs/rudder-cmd-norm", controls.rudder * rudderSign);
-  sdk.setPropertyValue("fcs/throttle-cmd-norm", controls.throttle);
-  sdk.setPropertyValue("fcs/pitch-trim-cmd-norm", controls.pitchTrim);
+  values[2] = controls.rudder * rudderSign;
+  values[3] = controls.throttle;
+  values[4] = controls.pitchTrim;
   // Each aircraft takes roll trim in its stick's units, so this is a share of full stick.
-  sdk.setPropertyValue("fcs/roll-trim-cmd-norm", controls.rollTrim * rollTrimRange);
-  sdk.setPropertyValue("fcs/flap-cmd-norm", controls.flaps);
-  sdk.setPropertyValue("fcs/brake-cmd-norm", controls.brake);
-  sdk.setPropertyValue("fcs/left-brake-cmd-norm", controls.brake);
-  sdk.setPropertyValue("fcs/right-brake-cmd-norm", controls.brake);
+  values[5] = controls.rollTrim * rollTrimRange;
+  values[6] = controls.flaps;
+  values[7] = controls.brake;
+  values[8] = controls.brake;
+  values[9] = controls.brake;
   // The SF50 FCS drives its physical actuator from this lever. The fixed-gear
   // C172 ignores it; presentation reads the resulting physical position.
-  sdk.setPropertyValue("gear/gear-cmd-norm", gearDownNorm);
+  values[10] = gearDownNorm;
+  writeCommands(sdk, values);
   if (stovl) sdk.setPropertyValue(stovl.commandProperty, stovl.commandNorm);
 }
